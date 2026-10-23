@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.c53.modules.auth.mapper.AuthUserAgreementMapper">
+
+    <!--
+        记录用户同意协议；同一用户、协议类型和版本重复同意时，
+        只更新同意时间。id 为自增主键，因此不写入。
+    -->
+    <insert id="upsert"
+            parameterType="com.c53.modules.auth.entity.AuthUserAgreementEntity">
+        INSERT INTO auth_user_agreements (
+            user_id, agreement_type, version, agreed_at, request_id, ip_address, user_agent
+        ) VALUES (
+            #{userId}, #{agreementType}, #{version}, #{agreedAt},
+            #{requestId}, #{ipAddress}, #{userAgent}
+        )
+        ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at)
+    </insert>
+</mapper>

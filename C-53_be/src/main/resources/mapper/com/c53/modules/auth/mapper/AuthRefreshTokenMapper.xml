@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.c53.modules.auth.mapper.AuthRefreshTokenMapper">
+
+    <!-- 查询某令牌家族下所有历史令牌摘要，用于泄露后加入 Redis 黑名单。 -->
+    <select id="selectHashesByFamily" resultType="java.lang.String">
+        SELECT token_hash
+        FROM auth_refresh_tokens
+        WHERE family_id = #{familyId}
+    </select>
+</mapper>

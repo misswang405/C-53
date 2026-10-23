@@ -1,0 +1,99 @@
+# C-53 配置示例
+# 使用方式：复制为 application.yml，按本地环境修改。
+# 生产环境必须通过环境变量覆盖所有密码与密钥，禁止使用本文件中的开发占位值。
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: never
+
+spring:
+  application:
+    name: c53-server
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:c_53}?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=utf8&useUnicode=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: 1
+      connection-timeout: 3000
+      validation-timeout: 2000
+      idle-timeout: 60000
+      max-lifetime: 1800000
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 2s
+      connect-timeout: 2s
+      lettuce:
+        shutdown-timeout: 100ms
+  sql:
+    init:
+      mode: ${DB_INIT_MODE:always}
+      schema-locations: classpath:db/auth/auth-schema-v2.sql
+      continue-on-error: false
+      encoding: UTF-8
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: always
+  mvc:
+    problemdetails:
+      enabled: false
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+  global-config:
+    banner: false
+    db-config:
+      id-type: input
+
+logging:
+  level:
+    root: INFO
+    com.c53: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%X{requestId:-no-request}] %logger{36} - %msg%n"
+
+auth:
+  jwt:
+    secret: ${AUTH_JWT_SECRET:c53-dev-only-jwt-secret-replace-in-production}
+    issuer: ${AUTH_JWT_ISSUER:c53}
+    access-ttl: ${AUTH_ACCESS_TTL:15m}
+  refresh:
+    remember-ttl: ${AUTH_REFRESH_REMEMBER_TTL:7d}
+    short-ttl: ${AUTH_REFRESH_SHORT_TTL:24h}
+    concurrent-grace: ${AUTH_REFRESH_CONCURRENT_GRACE:5s}
+  hmac:
+    secret: ${AUTH_HMAC_SECRET:c53-dev-only-hmac-secret-replace-in-production}
+    key-version: ${AUTH_HMAC_KEY_VERSION:1}
+  verification:
+    ttl: ${AUTH_VERIFICATION_TTL:5m}
+    resend-interval: ${AUTH_VERIFICATION_RESEND_INTERVAL:60s}
+    max-attempts: ${AUTH_VERIFICATION_MAX_ATTEMPTS:5}
+    # 仅开发环境使用；生产必须关闭并接入真实短信/邮件发送器
+    dev-mode: ${AUTH_VERIFICATION_DEV_MODE:true}
+    dev-code: ${AUTH_VERIFICATION_DEV_CODE:123456}
+  device:
+    cookie-name: ${AUTH_DEVICE_COOKIE_NAME:c53_device_session}
+    cookie-ttl: ${AUTH_DEVICE_COOKIE_TTL:180d}
+    secure: ${AUTH_DEVICE_COOKIE_SECURE:false}
+  redis:
+    key-prefix: ${AUTH_REDIS_KEY_PREFIX:auth}
+  limits:
+    login-per-ip-per-minute: ${AUTH_LIMIT_LOGIN_IP_PER_MINUTE:20}
+    login-failures-per-account: ${AUTH_LIMIT_LOGIN_FAILURES_ACCOUNT:5}
+    login-failure-window: ${AUTH_LIMIT_LOGIN_FAILURE_WINDOW:15m}
+    registration-per-ip-per-hour: ${AUTH_LIMIT_REGISTRATION_IP_PER_HOUR:20}
+    refresh-per-session-per-hour: ${AUTH_LIMIT_REFRESH_SESSION_PER_HOUR:60}
+    switch-per-device-per-minute: ${AUTH_LIMIT_SWITCH_DEVICE_PER_MINUTE:10}
+    username-check-per-ip-per-minute: ${AUTH_LIMIT_USERNAME_IP_PER_MINUTE:60}
+  cors:
+    allowed-origins: ${AUTH_CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}

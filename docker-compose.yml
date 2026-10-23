@@ -1,0 +1,71 @@
+name: c53-server
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: c53-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-c53-root-dev-only}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-c53}
+      MYSQL_USER: ${MYSQL_USER:-c53_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-c53-app-dev-only}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./C-53_be/src/main/resources/db/auth/auth-schema-v2.sql:/docker-entrypoint-initdb.d/01-auth-schema-v2.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - c53_internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: c53-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-c53-redis-dev-only}
+    command:
+      - sh
+      - -c
+      - >-
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory-policy noeviction
+        --requirepass "$${REDIS_PASSWORD}"
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli --no-auth-warning -a "$${REDIS_PASSWORD}" ping | grep -q PONG
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks:
+      - c53_internal
+
+networks:
+  c53_internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  mysql_data:
+  redis_data:

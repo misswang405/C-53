@@ -1,0 +1,37 @@
+# 构建产物
+C-53_be/target/
+C-53_be/target-debug.log
+C-53_fe/node_modules/
+C-53_fe/dist/
+*.class
+*.jar
+*.war
+
+# IDE 与系统文件
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 本地配置（仓库只提交 *.example）
+C-53_be/src/main/resources/application.yml
+C-53_be/maven-settings.xml
+C-53_be/.mvn/maven.config
+
+# 前端旧仓库备份与托管平台本地配置（本地保留，不上传）
+C-53_fe/.git.bak/
+C-53_fe/.openai/
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+
+# 日志与上传文件
+*.log
+uploads/

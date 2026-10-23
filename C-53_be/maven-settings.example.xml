@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 使用方式：复制为 maven-settings.xml，按需修改本地仓库路径。 -->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <localRepository>${user.home}/.m2/repository</localRepository>
+    <offline>false</offline>
+    <profiles>
+        <profile>
+            <id>aliyun-mirror</id>
+            <repositories>
+                <repository>
+                    <id>aliyun-central</id>
+                    <url>https://maven.aliyun.com/repository/public</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                </repository>
+            </repositories>
+            <pluginRepositories>
+                <pluginRepository>
+                    <id>aliyun-central</id>
+                    <url>https://maven.aliyun.com/repository/public</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                </pluginRepository>
+            </pluginRepositories>
+        </profile>
+    </profiles>
+    <activeProfiles>
+        <activeProfile>aliyun-mirror</activeProfile>
+    </activeProfiles>
+</settings>
