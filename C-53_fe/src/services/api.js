@@ -124,6 +124,22 @@ export const api = {
   getRecommendedCreators: () => request('/creators/recommended'),
   getPost: (postId) => request(`/posts/${postId}`),
   createPost: (body) => request('/posts', { method: 'POST', body: JSON.stringify(body) }),
+  updatePost: (postId, body) => request(`/posts/${postId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  publishPost: (postId) => request(`/posts/${postId}/publish`, { method: 'POST' }),
+  schedulePost: (postId, scheduledAt) => request(`/posts/${postId}/schedule`, { method: 'POST', body: JSON.stringify({ scheduledAt }) }),
+  cancelPostSchedule: (postId) => request(`/posts/${postId}/cancel-schedule`, { method: 'POST' }),
+  deletePost: (postId) => request(`/posts/${postId}`, { method: 'DELETE' }),
+
+  getMediaConfig: () => request('/media/config', {}, false),
+  uploadMedia: (file, mediaType) => {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('mediaType', mediaType)
+    return request('/media/upload', { method: 'POST', body })
+  },
+  requestUploadTicket: (body) => request('/media/upload-ticket', { method: 'POST', body: JSON.stringify(body) }),
+  confirmMedia: (mediaId, body) => request(`/media/${mediaId}/confirm`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  deleteMedia: (mediaId) => request(`/media/${mediaId}`, { method: 'DELETE' }),
   setPostLike: (postId, active) => request(`/posts/${postId}/like`, { method: active ? 'PUT' : 'DELETE' }),
   setPostBookmark: (postId, active) => request(`/posts/${postId}/bookmark`, { method: active ? 'PUT' : 'DELETE' }),
   getComments: (postId) => request(`/posts/${postId}/comments`),
@@ -254,6 +270,21 @@ export function normalizePost(post = {}) {
     saved: Boolean(post.bookmarkedByMe),
     commentCount: Number(post.commentCount || 0),
     comments: (post.comments || []).map(normalizeComment),
+    media: (post.media || []).map((item, index) => ({
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+      url: item.url,
+      width: item.width,
+      height: item.height,
+      durationMs: item.durationMs,
+      sortOrder: item.sortOrder ?? index,
+    })),
+    status: post.status || '',
+    scheduledAt: post.scheduledAt || '',
+    publishedAt: post.publishedAt || '',
+    editedAt: post.editedAt || '',
+    version: Number(post.version || 1),
+    ownedByMe: Boolean(post.ownedByMe),
     commentsOpen: false,
     reply: '',
     time: post.displayTime || post.createdAt || '',

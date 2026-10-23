@@ -77,6 +77,15 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/logout", "/auth/logout").authenticated()
                         // 当前用户信息需要已认证
                         .requestMatchers("/api/v1/me", "/me", "/auth/me").authenticated()
+                        // 发布模块：写接口必须登录；详情与话题列表允许游客访问
+                        .requestMatchers(HttpMethod.GET, "/api/v1/posts/*").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/posts", "/api/v1/posts/**").authenticated()
+                        .requestMatchers(HttpMethod.PATCH, "/api/v1/posts/**").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/posts/**").authenticated()
+                        .requestMatchers("/api/v1/me/posts").authenticated()
+                        // 媒体配置公开，便于未登录时也能拿到上传上限用于提示
+                        .requestMatchers(HttpMethod.GET, "/api/v1/media/config").permitAll()
+                        .requestMatchers("/api/v1/media/**").authenticated()
                         // 登录、注册、刷新、验证码等接口保持公开
                         .anyRequest().permitAll())
                 .exceptionHandling(exceptions -> exceptions

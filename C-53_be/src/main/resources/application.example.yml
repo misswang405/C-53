@@ -35,9 +35,17 @@ spring:
   sql:
     init:
       mode: ${DB_INIT_MODE:always}
-      schema-locations: classpath:db/auth/auth-schema-v2.sql
+      schema-locations:
+        - classpath:db/auth/auth-schema-v2.sql
+        - classpath:db/post/post-schema.sql
       continue-on-error: false
       encoding: UTF-8
+  servlet:
+    multipart:
+      # 服务端上传通道上限 10MB，这里留出 multipart 边界与表单字段的余量
+      max-file-size: ${MEDIA_MAX_FILE_SIZE:12MB}
+      max-request-size: ${MEDIA_MAX_REQUEST_SIZE:16MB}
+      file-size-threshold: 0
   jackson:
     serialization:
       write-dates-as-timestamps: false
@@ -97,3 +105,63 @@ auth:
     username-check-per-ip-per-minute: ${AUTH_LIMIT_USERNAME_IP_PER_MINUTE:60}
   cors:
     allowed-origins: ${AUTH_CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+
+# 媒体与 OSS。bucket 为空时媒体接口返回 503，纯文字功能仍可用。
+# 生产环境通过环境变量注入 AK/SK 与角色 ARN，禁止把真实值写进本文件。
+media:
+  env: ${MEDIA_ENV:dev}
+  endpoint: ${MEDIA_OSS_ENDPOINT:}
+  region: ${MEDIA_OSS_REGION:oss-cn-hangzhou}
+  bucket: ${MEDIA_BUCKET:}
+  access-key-id: ${MEDIA_ACCESS_KEY_ID:}
+  access-key-secret: ${MEDIA_ACCESS_KEY_SECRET:}
+  role-arn: ${MEDIA_ROLE_ARN:}
+  role-session-name: ${MEDIA_ROLE_SESSION_NAME:c53-upload}
+  sts-endpoint: ${MEDIA_STS_ENDPOINT:sts.cn-hangzhou.aliyuncs.com}
+  sts-region: ${MEDIA_STS_REGION:cn-hangzhou}
+  ticket-ttl: ${MEDIA_TICKET_TTL:15m}
+  part-size: ${MEDIA_PART_SIZE:5MB}
+  signed-url-ttl: ${MEDIA_SIGNED_URL_TTL:1h}
+  temp-ttl: ${MEDIA_TEMP_TTL:24h}
+  orphan-ttl: ${MEDIA_ORPHAN_TTL:24h}
+  server-upload-max-bytes: ${MEDIA_SERVER_UPLOAD_MAX_BYTES:10485760}
+  image:
+    max-bytes: ${MEDIA_IMAGE_MAX_BYTES:10485760}
+    max-count: ${MEDIA_IMAGE_MAX_COUNT:9}
+    max-source-edge: ${MEDIA_IMAGE_MAX_SOURCE_EDGE:8000}
+    max-output-edge: ${MEDIA_IMAGE_MAX_OUTPUT_EDGE:2048}
+    quality: ${MEDIA_IMAGE_QUALITY:0.85}
+  video:
+    max-bytes: ${MEDIA_VIDEO_MAX_BYTES:524288000}
+    max-duration: ${MEDIA_VIDEO_MAX_DURATION:5m}
+    max-width: ${MEDIA_VIDEO_MAX_WIDTH:1920}
+    max-height: ${MEDIA_VIDEO_MAX_HEIGHT:1080}
+    max-fps: ${MEDIA_VIDEO_MAX_FPS:60}
+    max-count: ${MEDIA_VIDEO_MAX_COUNT:1}
+  limits:
+    ticket-per-minute: ${MEDIA_LIMIT_TICKET_PER_MINUTE:5}
+    ticket-per-hour: ${MEDIA_LIMIT_TICKET_PER_HOUR:20}
+    upload-per-hour: ${MEDIA_LIMIT_UPLOAD_PER_HOUR:30}
+    concurrent-uploads: ${MEDIA_LIMIT_CONCURRENT_UPLOADS:3}
+    image-quota-per-day: ${MEDIA_LIMIT_IMAGE_QUOTA_PER_DAY:200}
+    video-quota-per-day: ${MEDIA_LIMIT_VIDEO_QUOTA_PER_DAY:10}
+    traffic-quota-per-day-bytes: ${MEDIA_LIMIT_TRAFFIC_QUOTA_PER_DAY_BYTES:2147483648}
+    read-per-minute-per-ip: ${MEDIA_LIMIT_READ_PER_MINUTE_PER_IP:120}
+
+# 发布模块
+post:
+  schedule:
+    min-lead: ${POST_SCHEDULE_MIN_LEAD:5m}
+    max-lead: ${POST_SCHEDULE_MAX_LEAD:365d}
+    scan-interval: ${POST_SCHEDULE_SCAN_INTERVAL:60s}
+    batch-size: ${POST_SCHEDULE_BATCH_SIZE:200}
+    lock-ttl: ${POST_SCHEDULE_LOCK_TTL:55s}
+  limits:
+    publish-per-hour: ${POST_LIMIT_PUBLISH_PER_HOUR:10}
+    autosave-per-minute: ${POST_LIMIT_AUTOSAVE_PER_MINUTE:60}
+  draft:
+    max-per-user: ${POST_DRAFT_MAX_PER_USER:50}
+    retention: ${POST_DRAFT_RETENTION:90d}
+  cleanup:
+    delete-retention: ${POST_CLEANUP_DELETE_RETENTION:30d}
+    scan-interval: ${POST_CLEANUP_SCAN_INTERVAL:10m}

@@ -5,6 +5,7 @@ import RegisterView from './components/auth/RegisterView.vue'
 import ResetPasswordView from './components/auth/ResetPasswordView.vue'
 import DiscoverView from './components/discover/DiscoverView.vue'
 import FeedView from './components/feed/FeedView.vue'
+import ScheduleDialog from './components/feed/ScheduleDialog.vue'
 import AppSidebar from './components/layout/AppSidebar.vue'
 import AppTopbar from './components/layout/AppTopbar.vue'
 import MessagesView from './components/messages/MessagesView.vue'
@@ -82,6 +83,17 @@ const searchQuery = ref('')
 const composerOpen = ref(false)
 const draft = ref('')
 const draftTopic = ref('独立创作')
+const draftId = ref('')
+const draftVersion = ref(0)
+const draftState = ref('')
+const draftRequestId = ref(newClientRequestId())
+const mediaItems = ref([])
+const uploadInProgress = ref(false)
+const publishBusy = ref(false)
+const scheduleOpen = ref(false)
+const scheduleBusy = ref(false)
+const lastDraftSavedAt = ref(0)
+let draftSaveTimer = 0
 const notificationsOpen = ref(false)
 const profileOpen = ref(false)
 const mobileNavOpen = ref(false)
@@ -234,6 +246,102 @@ const socialFromApi = { EVERYONE: '所有人', FOLLOWING: '我关注的人', MUT
 const socialToApi = { 所有人: 'EVERYONE', 我关注的人: 'FOLLOWING', 互相关注的人: 'MUTUAL', 不允许: 'NONE' }
 const genderFromApi = { PRIVATE: '保密', MALE: '男', FEMALE: '女', CUSTOM: '自定义' }
 const genderToApi = { 保密: 'PRIVATE', 男: 'MALE', 女: 'FEMALE', 自定义: 'CUSTOM' }
+
+function newClientRequestId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function currentTopicId() {
+  return topics.value.find((item) => item.name === draftTopic.value)?.id || topics.value[0]?.id || ''
+}
+
+function resetComposer() {
+  window.clearTimeout(draftSaveTimer)
+  draft.value = ''
+  mediaItems.value = []
+  draftId.value = ''
+  draftVersion.value = 0
+  draftState.value = ''
+  lastDraftSavedAt.value = 0
+  draftRequestId.value = newClientRequestId()
+  composerOpen.value = false
+}
+
+/**
+ * 保存草稿。首次保存创建草稿记录，后续按版本号更新；
+ * 冲突时不覆盖服务端内容，提示用户刷新。
+ */
+async function saveDraft(force = false) {
+  if (!isAuthenticated.value || publishBusy.value) return null
+  const content = draft.value.trim()
+  const mediaIds = mediaItems.value.map((item) => item.mediaId).filter(Boolean)
+  if (!content && !mediaIds.length) return null
+  if (!force && draftId.value && Date.now() - lastDraftSavedAt.value < 15000) return null
+  draftState.value = 'saving'
+  try {
+    let saved
+    if (draftId.value) {
+      saved = await api.updatePost(draftId.value, {
+        content,
+        topicId: currentTopicId(),
+        mediaIds,
+        version: draftVersion.value,
+      })
+    } else {
+      saved = await api.createPost({
+        content,
+        topicId: currentTopicId(),
+        mediaIds,
+        status: 'DRAFT',
+        clientRequestId: draftRequestId.value,
+      })
+      draftId.value = saved.id
+    }
+    draftVersion.value = Number(saved.version || draftVersion.value + 1)
+    lastDraftSavedAt.value = Date.now()
+    draftState.value = 'saved'
+    return draftId.value
+  } catch (error) {
+    draftState.value = 'error'
+    if (error?.status === 409) showToast('草稿已在其他设备更新，请刷新页面后重试')
+    return null
+  }
+}
+
+async function preparePostForSubmit() {
+  const content = draft.value.trim()
+  const mediaIds = mediaItems.value.map((item) => item.mediaId).filter(Boolean)
+  if (draftId.value) {
+    const updated = await api.updatePost(draftId.value, {
+      content,
+      topicId: currentTopicId(),
+      mediaIds,
+      version: draftVersion.value,
+    })
+    draftVersion.value = Number(updated.version || draftVersion.value + 1)
+    return draftId.value
+  }
+  const created = await api.createPost({
+    content,
+    topicId: currentTopicId(),
+    mediaIds,
+    status: 'DRAFT',
+    clientRequestId: draftRequestId.value,
+  })
+  draftId.value = created.id
+  draftVersion.value = Number(created.version || 1)
+  return draftId.value
+}
+
+function cancelDraft() {
+  // 已保存的草稿保留在服务端，可在“我的发布”里继续编辑
+  resetComposer()
+}
+
+function handleMediaError(message) {
+  showToast(message || '媒体处理失败，请稍后再试')
+}
 
 function normalizeTopic(topic = {}) {
   return {
@@ -426,21 +534,74 @@ function switchView(view) {
 }
 
 async function publishPost() {
-  if (!requireAuthentication('feed')) return
-  const content = draft.value.trim()
-  if (!content) return
+  if (!requireAuthentication('feed')) return false
+  if (!draft.value.trim()) {
+    showToast('写点什么再发布吧')
+    return false
+  }
+  if (publishBusy.value) return false
+  publishBusy.value = true
+  draftState.value = 'saving'
   try {
-    const topic = topics.value.find((item) => item.name === draftTopic.value)
-    const created = normalizePost(await api.createPost({ topicId: topic?.id, content }))
+    let result
+    if (draftId.value) {
+      await api.updatePost(draftId.value, {
+        content: draft.value.trim(),
+        topicId: currentTopicId(),
+        mediaIds: mediaItems.value.map((item) => item.mediaId).filter(Boolean),
+        version: draftVersion.value,
+      })
+      result = await api.publishPost(draftId.value)
+    } else {
+      result = await api.createPost({
+        content: draft.value.trim(),
+        topicId: currentTopicId(),
+        mediaIds: mediaItems.value.map((item) => item.mediaId).filter(Boolean),
+        status: 'PUBLISHED',
+        clientRequestId: draftRequestId.value,
+      })
+    }
+    const created = normalizePost(result)
     posts.value.unshift(created)
     profilePosts.value.unshift(created)
-    draft.value = ''
-    composerOpen.value = false
+    resetComposer()
     activeView.value = 'feed'
-    feedFilter.value = '最新发布'
     showToast('动态已发布')
+    return true
   } catch (error) {
+    draftState.value = ''
     showToast(errorText(error))
+    return false
+  } finally {
+    publishBusy.value = false
+  }
+}
+
+function openSchedule() {
+  if (!requireAuthentication('feed')) return
+  if (!draft.value.trim()) {
+    showToast('写点什么再定时发布吧')
+    return
+  }
+  scheduleOpen.value = true
+}
+
+async function confirmSchedule(scheduledAt) {
+  if (scheduleBusy.value) return
+  scheduleBusy.value = true
+  draftState.value = 'saving'
+  try {
+    const postId = await preparePostForSubmit()
+    await api.schedulePost(postId, scheduledAt)
+    resetComposer()
+    scheduleOpen.value = false
+    activeView.value = 'feed'
+    showToast('已设置定时发布')
+  } catch (error) {
+    draftState.value = ''
+    showToast(errorText(error))
+  } finally {
+    scheduleBusy.value = false
   }
 }
 
@@ -1417,6 +1578,19 @@ watch(feedFilter, () => {
   if (activeView.value === 'feed') void loadFeed()
 })
 
+// 话题列表加载后，把默认话题纠正为服务端存在的项
+watch(topics, (list) => {
+  if (!list.length) return
+  if (!list.some((topic) => topic.name === draftTopic.value)) draftTopic.value = list[0].name
+}, { immediate: true })
+
+// 停止输入 3 秒后自动保存草稿，持续输入时由 saveDraft 的 15 秒节流兜底
+watch([draft, draftTopic, mediaItems], () => {
+  if (!composerOpen.value || !isAuthenticated.value) return
+  window.clearTimeout(draftSaveTimer)
+  draftSaveTimer = window.setTimeout(() => { void saveDraft() }, 3000)
+}, { deep: true })
+
 watch(() => loginForm.value.account, (account) => {
   if (identifierKey(normalizeIdentifier(account)) === loginVerificationTarget.value) return
   resetLoginVerification()
@@ -1476,13 +1650,15 @@ onMounted(() => {
         async execute(input) {
           const content = typeof input?.content === 'string' ? input.content.trim() : ''
           const topic = topics.value.some((item) => item.name === input?.topic) ? input.topic : topics.value[0]?.name
-          if (!content || content.length > 600) throw new Error('动态内容需要保持在 1 到 600 字之间')
+          if (!content || Array.from(content).length > 600) throw new Error('动态内容需要保持在 1 到 600 字之间')
 
           draft.value = content
           draftTopic.value = topic
-          publishPost()
+          mediaItems.value = []
+          const published = await publishPost()
+          if (!published) throw new Error('动态发布失败，请稍后重试')
           await nextTick()
-          return { status: 'published', postId: posts.value[0].id, topic }
+          return { status: 'published', postId: posts.value[0]?.id || '', topic }
         },
       },
       { signal: webMcpLifecycle.signal },
@@ -1498,6 +1674,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', handleSettingsScroll)
   if (settingsScrollFrame) window.cancelAnimationFrame(settingsScrollFrame)
   window.clearTimeout(settingsSaveTimer)
+  window.clearTimeout(draftSaveTimer)
 })
 </script>
 
@@ -1674,6 +1851,15 @@ onBeforeUnmount(() => {
         :posts="visiblePosts"
         :people="people"
         :response-count="responseCount"
+        :media-items="mediaItems"
+        :draft-state="draftState"
+        :uploading="uploadInProgress"
+        :busy="publishBusy"
+        @update:media-items="mediaItems = $event"
+        @update:uploading="uploadInProgress = $event"
+        @schedule="openSchedule"
+        @cancel-draft="cancelDraft"
+        @media-error="handleMediaError"
         @login="openLogin('feed')"
         @publish="publishPost"
         @navigate="switchView"
@@ -1735,6 +1921,13 @@ onBeforeUnmount(() => {
         @share="sharePost"
       />
     </section>
+
+    <ScheduleDialog
+      :open="scheduleOpen"
+      :busy="scheduleBusy"
+      @close="scheduleOpen = false"
+      @confirm="confirmSchedule"
+    />
 
     <SharePanel
       :open="sharePanelOpen"

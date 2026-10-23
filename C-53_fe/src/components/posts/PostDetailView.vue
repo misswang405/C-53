@@ -35,6 +35,13 @@ defineEmits([
         </div>
       </header>
 
+      <div v-if="post.media?.length" class="detail-media" :class="{ 'single-video': post.media[0].mediaType === 'VIDEO' }">
+        <template v-for="item in post.media" :key="item.mediaId">
+          <img v-if="item.mediaType === 'IMAGE'" :src="item.url" alt="" loading="lazy" />
+          <video v-else :src="item.url" controls preload="metadata" playsinline></video>
+        </template>
+      </div>
+
       <div class="detail-body">
         <p v-for="paragraph in post.detail?.length ? post.detail : [post.body]" :key="paragraph">{{ paragraph }}</p>
         <aside class="detail-note"><span></span><div><small>创作进展</small><strong>{{ post.note }}</strong></div></aside>

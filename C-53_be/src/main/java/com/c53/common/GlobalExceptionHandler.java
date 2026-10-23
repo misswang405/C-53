@@ -12,6 +12,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
@@ -68,6 +70,32 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleUnreadable(Exception exception) {
         return ResponseEntity.badRequest()
                 .body(new ApiErrorResponse("VALIDATION_ERROR", "请求格式不正确", null, RequestIds.current()));
+    }
+
+    /**
+     * 处理 multipart 超过 Spring 上限。
+     *
+     * <p>业务层先校验 10MB，这里兜底防止超大请求占满内存或磁盘。</p>
+     *
+     * @param exception 上传超限异常
+     * @return 413 响应
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleUploadTooLarge(MaxUploadSizeExceededException exception) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(new ApiErrorResponse("PAYLOAD_TOO_LARGE", "文件超过上传上限", null, RequestIds.current()));
+    }
+
+    /**
+     * 处理 multipart 请求解析失败，例如缺少文件字段。
+     *
+     * @param exception 上传格式异常
+     * @return 400 响应
+     */
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<ApiErrorResponse> handleMultipart(MultipartException exception) {
+        return ResponseEntity.badRequest()
+                .body(new ApiErrorResponse("VALIDATION_ERROR", "上传请求格式不正确", null, RequestIds.current()));
     }
 
     /**

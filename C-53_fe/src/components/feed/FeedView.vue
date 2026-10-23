@@ -1,5 +1,8 @@
 <script setup>
-defineProps({
+import { computed } from 'vue'
+import MediaUploader from './MediaUploader.vue'
+
+const props = defineProps({
   activeView: { type: String, required: true },
   isAuthenticated: { type: Boolean, required: true },
   draft: { type: String, default: '' },
@@ -12,13 +15,26 @@ defineProps({
   responseCount: { type: Function, required: true },
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
+  mediaItems: { type: Array, default: () => [] },
+  draftState: { type: String, default: '' },
+  uploading: { type: Boolean, default: false },
+  busy: { type: Boolean, default: false },
 })
 
 defineEmits([
   'update:draft', 'update:composerOpen', 'update:draftTopic', 'update:feedFilter',
-  'login', 'publish', 'navigate', 'open-post', 'toggle-like', 'go-comments',
-  'share', 'toggle-save', 'add-comment', 'follow',
+  'update:mediaItems', 'update:uploading', 'login', 'publish', 'schedule', 'cancel-draft', 'media-error',
+  'navigate', 'open-post', 'toggle-like', 'go-comments', 'share', 'toggle-save',
+  'add-comment', 'follow',
 ])
+
+const draftLength = computed(() => Array.from(props.draft || '').length)
+const canSubmit = computed(() => Boolean(props.draft.trim()) && !props.busy && !props.uploading)
+const draftStateText = computed(() => ({
+  saving: '保存中…',
+  saved: '草稿已保存',
+  error: '草稿保存失败',
+}[props.draftState] || ''))
 </script>
 
 <template>
@@ -37,14 +53,30 @@ defineEmits([
       </div>
 
       <section v-if="activeView === 'feed' && isAuthenticated" class="composer-card" :class="{ expanded: composerOpen }">
-        <div class="composer-main"><span class="avatar ink">许</span><textarea :value="draft" :rows="composerOpen ? 4 : 1" placeholder="分享一个想法、进展，或向大家提问…" @input="$emit('update:draft', $event.target.value)" @focus="$emit('update:composerOpen', true)"></textarea></div>
+        <div class="composer-main"><span class="avatar ink">许</span><textarea :value="draft" :rows="composerOpen ? 4 : 1" maxlength="600" placeholder="分享一个想法、进展，或向大家提问…" @input="$emit('update:draft', $event.target.value)" @focus="$emit('update:composerOpen', true)"></textarea></div>
         <Transition name="reveal">
-          <div v-if="composerOpen" class="composer-footer">
-            <div class="composer-tools">
-              <button type="button" aria-label="添加图片">▧</button><button type="button" aria-label="添加链接">↗</button>
-              <select :value="draftTopic" aria-label="选择话题" @change="$emit('update:draftTopic', $event.target.value)"><option v-for="topic in topics" :key="topic.name">{{ topic.name }}</option></select>
+          <div v-if="composerOpen" class="composer-expanded">
+            <MediaUploader
+              :model-value="mediaItems"
+              :max-images="9"
+              :max-videos="1"
+              :disabled="busy"
+              @update:model-value="$emit('update:mediaItems', $event)"
+              @update:uploading="$emit('update:uploading', $event)"
+              @error="$emit('media-error', $event)"
+            />
+            <div class="composer-footer">
+              <div class="composer-tools">
+                <select :value="draftTopic" aria-label="选择话题" @change="$emit('update:draftTopic', $event.target.value)"><option v-for="topic in topics" :key="topic.name">{{ topic.name }}</option></select>
+              </div>
+              <div class="composer-actions">
+                <span class="draft-state" :class="draftState">{{ draftStateText }}</span>
+                <span>{{ draftLength }}/600</span>
+                <button class="text-button" type="button" :disabled="busy" @click="$emit('cancel-draft')">取消</button>
+                <button class="text-button" type="button" :disabled="!canSubmit" @click="$emit('schedule')">定时</button>
+                <button class="primary-button" type="button" :disabled="!canSubmit" @click="$emit('publish')">{{ busy ? '发布中…' : '发布动态' }}</button>
+              </div>
             </div>
-            <div class="composer-actions"><span>{{ draft.length }}/600</span><button class="text-button" type="button" @click="$emit('update:composerOpen', false); $emit('update:draft', '')">取消</button><button class="primary-button" type="button" :disabled="!draft.trim()" @click="$emit('publish')">发布动态</button></div>
           </div>
         </Transition>
       </section>
@@ -60,6 +92,13 @@ defineEmits([
         <article v-for="post in posts" :key="post.id" class="post-card" role="button" tabindex="0" :aria-label="'查看动态详情：' + post.title" @click="$emit('open-post', post)" @keydown.enter.prevent="$emit('open-post', post)" @keydown.space.prevent="$emit('open-post', post)">
           <header class="post-header"><span class="avatar" :class="post.tone">{{ post.initials }}</span><div class="author-copy"><strong>{{ post.author }}</strong><span>{{ post.handle }} · {{ post.role }}</span></div><time>{{ post.time }}</time><button class="more-button" type="button" aria-label="更多操作" @click.stop>•••</button></header>
           <div class="post-copy"><button class="topic-pill" type="button" @click.stop="$emit('navigate', 'discover')"># {{ post.topic }}</button><h2>{{ post.title }}</h2><p>{{ post.body }}</p><div class="post-note"><span></span>{{ post.note }}</div></div>
+          <div v-if="post.media?.length" class="post-media" :class="{ 'single-video': post.media[0].mediaType === 'VIDEO' }">
+            <template v-for="item in post.media.slice(0, 3)" :key="item.mediaId">
+              <img v-if="item.mediaType === 'IMAGE'" :src="item.url" alt="" loading="lazy" />
+              <video v-else :src="item.url" preload="metadata" muted playsinline></video>
+            </template>
+            <span v-if="post.media.length > 3" class="media-more">＋{{ post.media.length - 3 }}</span>
+          </div>
           <footer class="post-actions" @click.stop>
             <button class="like-button" type="button" :class="{ active: post.liked }" :aria-pressed="post.liked" @click="$emit('toggle-like', post)"><span class="heart-icon">{{ post.liked ? '♥' : '♡' }}</span>{{ post.likes }}</button>
             <button type="button" @click="$emit('go-comments', post)"><span class="comment-icon"></span>{{ responseCount(post) }}</button>
