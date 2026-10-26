@@ -38,6 +38,7 @@ spring:
       schema-locations:
         - classpath:db/auth/auth-schema-v2.sql
         - classpath:db/post/post-schema.sql
+        - classpath:db/interaction/interaction-schema.sql
       continue-on-error: false
       encoding: UTF-8
   servlet:
@@ -86,8 +87,9 @@ auth:
     ttl: ${AUTH_VERIFICATION_TTL:5m}
     resend-interval: ${AUTH_VERIFICATION_RESEND_INTERVAL:60s}
     max-attempts: ${AUTH_VERIFICATION_MAX_ATTEMPTS:5}
-    # 仅开发环境使用；生产必须关闭并接入真实短信/邮件发送器
-    dev-mode: ${AUTH_VERIFICATION_DEV_MODE:true}
+    # 固定验证码仅允许显式 dev/test profile；本地设置 SPRING_PROFILES_ACTIVE=dev、AUTH_VERIFICATION_DEV_MODE=true。
+    # 生产必须关闭并接入真实短信/邮件 VerificationSender；当前仓库只有开发发送器。
+    dev-mode: ${AUTH_VERIFICATION_DEV_MODE:false}
     dev-code: ${AUTH_VERIFICATION_DEV_CODE:123456}
   device:
     cookie-name: ${AUTH_DEVICE_COOKIE_NAME:c53_device_session}
@@ -103,6 +105,13 @@ auth:
     refresh-per-session-per-hour: ${AUTH_LIMIT_REFRESH_SESSION_PER_HOUR:60}
     switch-per-device-per-minute: ${AUTH_LIMIT_SWITCH_DEVICE_PER_MINUTE:10}
     username-check-per-ip-per-minute: ${AUTH_LIMIT_USERNAME_IP_PER_MINUTE:60}
+    reset-send-per-ip-per-minute: ${AUTH_LIMIT_RESET_SEND_IP_PER_MINUTE:10}
+    reset-send-per-target-per-hour: ${AUTH_LIMIT_RESET_SEND_TARGET_PER_HOUR:5}
+    reset-send-per-ip-per-day: ${AUTH_LIMIT_RESET_SEND_IP_PER_DAY:100}
+    reset-send-per-target-per-day: ${AUTH_LIMIT_RESET_SEND_TARGET_PER_DAY:10}
+    reset-submit-per-ip-per-minute: ${AUTH_LIMIT_RESET_SUBMIT_IP_PER_MINUTE:10}
+    reset-submit-per-target-per-window: ${AUTH_LIMIT_RESET_SUBMIT_TARGET_PER_WINDOW:5}
+    reset-submit-window: ${AUTH_LIMIT_RESET_SUBMIT_WINDOW:15m}
   cors:
     allowed-origins: ${AUTH_CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
 
@@ -153,7 +162,7 @@ post:
   schedule:
     min-lead: ${POST_SCHEDULE_MIN_LEAD:5m}
     max-lead: ${POST_SCHEDULE_MAX_LEAD:365d}
-    scan-interval: ${POST_SCHEDULE_SCAN_INTERVAL:60s}
+    scan-interval: ${POST_SCHEDULE_SCAN_INTERVAL:PT60S}
     batch-size: ${POST_SCHEDULE_BATCH_SIZE:200}
     lock-ttl: ${POST_SCHEDULE_LOCK_TTL:55s}
   limits:
@@ -164,4 +173,35 @@ post:
     retention: ${POST_DRAFT_RETENTION:90d}
   cleanup:
     delete-retention: ${POST_CLEANUP_DELETE_RETENTION:30d}
-    scan-interval: ${POST_CLEANUP_SCAN_INTERVAL:10m}
+    scan-interval: ${POST_CLEANUP_SCAN_INTERVAL:PT10M}
+
+# 互动与收藏模块
+interaction:
+  limits:
+    like-per-minute: ${INTERACTION_LIKE_PER_MINUTE:120}
+    bookmark-per-minute: ${INTERACTION_BOOKMARK_PER_MINUTE:120}
+    comment-per-minute: ${INTERACTION_COMMENT_PER_MINUTE:30}
+    comments-read-per-minute: ${INTERACTION_COMMENTS_READ_PER_MINUTE:120}
+    share-per-minute: ${INTERACTION_SHARE_PER_MINUTE:60}
+    bookmarks-read-per-minute: ${INTERACTION_BOOKMARKS_READ_PER_MINUTE:60}
+
+# 社区与发现模块
+discovery:
+  online:
+    window: ${DISCOVERY_ONLINE_WINDOW:5m}
+    touch-interval: ${DISCOVERY_ONLINE_TOUCH_INTERVAL:60s}
+    max-count: ${DISCOVERY_ONLINE_MAX_COUNT:1000000}
+  feed:
+    recommended-window: ${DISCOVERY_FEED_RECOMMENDED_WINDOW:7d}
+    candidate-limit: ${DISCOVERY_FEED_CANDIDATE_LIMIT:500}
+    max-author-streak: ${DISCOVERY_FEED_MAX_AUTHOR_STREAK:2}
+    default-limit: ${DISCOVERY_FEED_DEFAULT_LIMIT:20}
+    max-limit: ${DISCOVERY_FEED_MAX_LIMIT:50}
+    anonymous-per-minute: ${DISCOVERY_FEED_ANONYMOUS_PER_MINUTE:60}
+    user-per-minute: ${DISCOVERY_FEED_USER_PER_MINUTE:120}
+  creator:
+    candidate-limit: ${DISCOVERY_CREATOR_CANDIDATE_LIMIT:100}
+    result-limit: ${DISCOVERY_CREATOR_RESULT_LIMIT:6}
+    cache-ttl: ${DISCOVERY_CREATOR_CACHE_TTL:5m}
+    active-window: ${DISCOVERY_CREATOR_ACTIVE_WINDOW:30d}
+    per-minute-per-ip: ${DISCOVERY_CREATOR_PER_MINUTE_PER_IP:30}

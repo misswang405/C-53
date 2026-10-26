@@ -45,12 +45,16 @@ public class RedisRateLimiter {
      */
     public RateLimitResult tryAcquire(String key, int limit, Duration window) {
         try {
+            // 原子自增并在首次写入时设置过期时间
             Long current = redis.execute(INCREMENT_SCRIPT, List.of(key),
                     String.valueOf(window.toMillis()));
+            // 计数
             long count = current == null ? 0 : current;
+            // 判断是否超过阈值
             if (count <= limit) {
                 return RateLimitResult.allowed(limit - count);
             }
+            // 返回剩余秒数
             Long ttl = redis.getExpire(key, TimeUnit.SECONDS);
             return RateLimitResult.rejected(ttl == null ? 1 : ttl);
         } catch (RuntimeException exception) {

@@ -1,7 +1,9 @@
 package com.c53;
 
 import com.c53.config.AuthProperties;
+import com.c53.config.DiscoveryProperties;
 import com.c53.config.MediaProperties;
+import com.c53.config.InteractionProperties;
 import com.c53.config.PostProperties;
 import org.apache.ibatis.annotations.Mapper;
 import org.mybatis.spring.annotation.MapperScan;
@@ -19,7 +21,8 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
  */
 @SpringBootApplication
 @MapperScan(basePackages = "com.c53.modules", annotationClass = Mapper.class)
-@EnableConfigurationProperties({AuthProperties.class, MediaProperties.class, PostProperties.class})
+@EnableConfigurationProperties({AuthProperties.class, MediaProperties.class, PostProperties.class,
+        DiscoveryProperties.class, InteractionProperties.class})
 @EnableTransactionManagement
 public class C53Application {
 

@@ -76,9 +76,22 @@ public class SecurityConfig {
                         // 退出登录需要知道当前会话，必须已认证
                         .requestMatchers("/api/v1/auth/logout", "/auth/logout").authenticated()
                         // 当前用户信息需要已认证
-                        .requestMatchers("/api/v1/me", "/me", "/auth/me").authenticated()
+                        .requestMatchers("/api/v1/me", "/me", "/api/v1/auth/me", "/auth/me").authenticated()
                         // 发布模块：写接口必须登录；详情与话题列表允许游客访问
                         .requestMatchers(HttpMethod.GET, "/api/v1/posts/*").permitAll()
+                        // 互动：评论可匿名读取，其余操作必须登录
+                        .requestMatchers(HttpMethod.GET, "/api/v1/posts/*/comments").permitAll()
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/posts/*/like").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/posts/*/like").authenticated()
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/posts/*/bookmark").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/posts/*/bookmark").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/posts/*/comments").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/comments/*/replies").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/posts/*/share-events").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/me/bookmarks").authenticated()
+                        // 社区与发现：信息流、在线人数、推荐创作者均允许游客，关注流由 Service 层强制登录
+                        .requestMatchers(HttpMethod.GET, "/api/v1/feed",
+                                "/api/v1/community/**", "/api/v1/creators/**", "/api/v1/topics/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/posts", "/api/v1/posts/**").authenticated()
                         .requestMatchers(HttpMethod.PATCH, "/api/v1/posts/**").authenticated()
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/posts/**").authenticated()
