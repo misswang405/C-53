@@ -1,4 +1,6 @@
 <script setup>
+// 登录页面：展示验证码、密码登录及已保存账号入口。
+// 父组件提供登录表单、验证码倒计时与账号列表；本组件仅负责输入和展示。
 defineProps({
   form: { type: Object, required: true },
   error: { type: String, default: '' },
@@ -10,6 +12,7 @@ defineProps({
   accounts: { type: Array, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['submit', 'back', 'clear-error', 'change-mode', 'toggle-password', 'send-code', 'forgot', 'quick-login', 'register'])
 </script>
 
@@ -26,7 +29,8 @@ defineEmits(['submit', 'back', 'clear-error', 'change-mode', 'toggle-password', 
           <p>登录后继续发布想法、参与讨论，也和你在这里认识的人保持联系。</p>
         </div>
         <div class="login-community">
-          <span class="avatar mini violet">沈</span><span class="avatar mini coral">屿</span><span class="avatar mini green">默</span>
+          <span class="avatar mini violet">沈</span><span class="avatar mini coral">屿</span><span
+            class="avatar mini green">默</span>
           <p><strong>28 位成员在线</strong><br />新的讨论正在发生</p>
         </div>
       </div>
@@ -38,34 +42,22 @@ defineEmits(['submit', 'back', 'clear-error', 'change-mode', 'toggle-password', 
           <p>{{ isCodeLogin ? '使用手机号或邮箱验证码继续' : '使用手机号或邮箱和密码继续' }}</p>
         </header>
         <div class="login-mode-switch" role="tablist" aria-label="登录方式">
-          <button type="button" role="tab" :aria-selected="isCodeLogin" :class="{ active: isCodeLogin }" @click="$emit('change-mode', 'code')">验证码登录</button>
-          <button type="button" role="tab" :aria-selected="!isCodeLogin" :class="{ active: !isCodeLogin }" @click="$emit('change-mode', 'password')">密码登录</button>
+          <button type="button" role="tab" :aria-selected="isCodeLogin" :class="{ active: isCodeLogin }"
+            @click="$emit('change-mode', 'code')">验证码登录</button>
+          <button type="button" role="tab" :aria-selected="!isCodeLogin" :class="{ active: !isCodeLogin }"
+            @click="$emit('change-mode', 'password')">密码登录</button>
         </div>
         <label>
           <span>{{ isCodeLogin ? '手机号或邮箱' : '手机号、邮箱或用户名' }}</span>
-          <input
-            v-model="form.account"
-            type="text"
-            autocomplete="username"
-            inputmode="text"
-            :placeholder="isCodeLogin ? '手机号 / 邮箱' : '手机号 / 邮箱 / 用户名'"
-            @input="$emit('clear-error')"
-          />
+          <input v-model="form.account" type="text" autocomplete="username" inputmode="text"
+            :placeholder="isCodeLogin ? '手机号 / 邮箱' : '手机号 / 邮箱 / 用户名'" @input="$emit('clear-error')" />
         </label>
         <label v-if="isCodeLogin">
           <span>验证码</span>
           <div class="code-field">
-            <input
-              v-model="form.code"
-              type="text"
-              inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength="6"
-              pattern="[0-9]*"
-              placeholder="请输入 6 位验证码"
-              aria-label="验证码"
-              @input="form.code = form.code.replace(/\D/g, '').slice(0, 6); $emit('clear-error')"
-            />
+            <input v-model="form.code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+              pattern="[0-9]*" placeholder="请输入 6 位验证码" aria-label="验证码"
+              @input="form.code = form.code.replace(/\D/g, '').slice(0, 6); $emit('clear-error')" />
             <button type="button" :disabled="codeSending || codeCountdown > 0" @click="$emit('send-code')">
               {{ codeSending ? '发送中…' : codeCountdown > 0 ? `${codeCountdown}s 后重发` : '获取验证码' }}
             </button>
@@ -75,7 +67,8 @@ defineEmits(['submit', 'back', 'clear-error', 'change-mode', 'toggle-password', 
         <label v-else>
           <span>密码</span>
           <div class="password-field">
-            <input v-model="form.password" :type="passwordVisible ? 'text' : 'password'" autocomplete="current-password" placeholder="请输入密码" @input="$emit('clear-error')" />
+            <input v-model="form.password" :type="passwordVisible ? 'text' : 'password'" autocomplete="current-password"
+              placeholder="请输入密码" @input="$emit('clear-error')" />
             <button type="button" @click="$emit('toggle-password')">{{ passwordVisible ? '隐藏' : '显示' }}</button>
           </div>
         </label>

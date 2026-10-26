@@ -1,0 +1,31 @@
+认证与密码重置 v2.3 增量迁移说明
+
+本目录仅提供离线脚本，不接入自动迁移，不执行任何数据库变更。
+
+1. 版本选择
+- MySQL 5.7.8+：auth-cleanup-v2.3-mysql57.sql。5.7 解析但忽略 CHECK，脚本只更新 scene 注释并建补偿表，不使用不兼容的 DROP CHECK。枚举与任务状态由应用校验。
+- MySQL 8.0.16+：auth-cleanup-v2.3-mysql80.sql。删除原 chk_avc_scene 并在同一 ALTER 中重建，允许 register/login/reset_password；补偿表具有强制 CHECK。
+- MySQL 8.0.0 至 8.0.15：未支持本次增量脚本，需升级或单独评审，不可直接套用任意一份。
+- 从 MySQL 5.7 升级到 8.0.16+ 后需检查 SHOW CREATE TABLE 的实际约束，不能假设原来被忽略的 CHECK 会自动变为有效约束。
+
+2. 人工执行前
+- 备份并在同版本隔离环境演练；确认 SELECT VERSION()、当前数据库、UTC 时区和 InnoDB。
+- 使用 SHOW CREATE TABLE auth_verification_challenges 检查实际约束。8.0.16+ 脚本要求存在名为 chk_avc_scene 的旧约束；若来自 5.7 升级或约束已被改名，应人工调整脚本，不可盲跑。
+- 检查 scene 现有数据是否都在 register/login/reset_password 内；若有非法值先按业务规则修复，不得删除用户凭证或跳过检查。
+- 用 SHOW TABLES / SHOW CREATE TABLE 检查是否已有 auth_cleanup_tasks。同名异构表不会被 CREATE TABLE IF NOT EXISTS 修复。
+- DDL 会自动提交，5.7 不支持跨语句原子 DDL；8.0 的单语句原子 DDL 也不代表整份脚本是事务。评估元数据锁与写入窗口，不要依赖 ROLLBACK 回退。
+
+3. 顺序与验证
+- 先执行经过评审且匹配数据库版本的唯一一份增量脚本，再部署依赖补偿表的后端；禁止把两份连续执行。
+- 新建库使用上级 auth-schema-v2.sql 基线，不再执行本增量脚本。CREATE TABLE IF NOT EXISTS 不会升级已有库。
+- 8.0.16+ 使用 SHOW CREATE TABLE / information_schema.TABLE_CONSTRAINTS 核对 chk_avc_scene。
+- 核对 auth_cleanup_tasks 字段和 idx_act_pending_retry(status,next_retry_at,id)。检查 PENDING 积压与 next_retry_at，并验证 Redis 故障后任务仍保留且恢复后可以完成。
+- 集成验收需验证：业务事务回滚时任务不存在；任务写入失败时密码/家族撤销事务一起回滚；同任务并发处理不能让失败覆盖 COMPLETED；Redis 撤销/摘要删除失败不会提前标为完成。
+
+4. 运行语义与保留
+- enqueue 必须通过 Spring 注入代理，在调用者已有事务中执行（MANDATORY）；入队失败向外抛出。retryPending 不加入调用方事务，必须在业务提交后调用，后台默认每 30 秒扫描，每批最多 100 条。
+- Redis 先写家族吊销标记并删除当前指针，再删除该家族已审计摘要对应的 Token Key；全部成功后标 COMPLETED。
+- 失败无限重试，退避从 5 秒指数增长到 1 小时，不因家族到期丢弃任务。到期任务仍执行清理，标记 TTL 至少 1 秒。
+- 多实例可重复执行同一任务，依赖 Redis 幂等与数据库条件更新；不需要依赖 Redis 分布式锁。调用者必须已在数据库中吊销会话/家族；该补偿任务不替代数据库有效性检查，也不阻止错误调用者重新签发已撤销家族。
+- 补偿表不建家族外键，禁止自动级联丢弃 PENDING 任务。完成前必须保留 auth_refresh_tokens 审计以支持摘要删除。完成记录暂不自动清理，后续按审计保留策略另行处理。
+- 回滚应用时保留补偿表、已撤销会话及新密码，不恢复旧哈希，不收紧 scene 约束而使已写入 reset_password 记录失效。

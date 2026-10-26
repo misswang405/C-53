@@ -1,7 +1,13 @@
+// 业务接口访问与响应适配：统一处理认证令牌、错误和页面展示模型。
+// API 地址支持通过环境变量覆盖，默认走前端代理的 v1 接口。
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '')
+// 访问令牌和刷新令牌分开存储，便于按“保持登录”选择存储介质。
 const ACCESS_TOKEN_KEY = 'c53-access-token'
 const REFRESH_TOKEN_KEY = 'c53-refresh-token'
+// 清理会话后，不允许此前在途的刷新或私有响应恢复旧认证上下文。
+let sessionVersion = 0
 
+/** 统一接口异常，保留 HTTP 状态、业务错误码和字段校验详情。 */
 export class ApiError extends Error {
   constructor(message, status = 0, code = 'NETWORK_ERROR', details = []) {
     super(message)
@@ -20,15 +26,30 @@ export function getRefreshToken() {
   return window.localStorage.getItem(REFRESH_TOKEN_KEY) || window.sessionStorage.getItem(REFRESH_TOKEN_KEY) || ''
 }
 
+// 切换存储前清除旧会话，避免本地存储与会话存储同时残留不同账号令牌。
 export function saveSession(session, remember = true) {
+  clearSession()
+  storeSession(session, remember)
+}
+
+function storeSession(session, remember) {
+  clearStoredSession()
   const storage = remember ? window.localStorage : window.sessionStorage
   const token = session?.token || session
-  clearSession()
   if (token?.accessToken) storage.setItem(ACCESS_TOKEN_KEY, token.accessToken)
   if (token?.refreshToken) storage.setItem(REFRESH_TOKEN_KEY, token.refreshToken)
 }
 
+export function getSessionVersion() {
+  return sessionVersion
+}
+
 export function clearSession() {
+  sessionVersion += 1
+  clearStoredSession()
+}
+
+function clearStoredSession() {
   window.localStorage.removeItem(ACCESS_TOKEN_KEY)
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
   window.sessionStorage.removeItem(ACCESS_TOKEN_KEY)
@@ -39,20 +60,30 @@ function readToken() {
   return window.localStorage.getItem(ACCESS_TOKEN_KEY) || window.sessionStorage.getItem(ACCESS_TOKEN_KEY) || ''
 }
 
+// 合并并发刷新请求，避免同一刷新令牌被多个请求同时轮换。
 let refreshRequest = null
+let refreshVersion = -1
+
+function requireCurrentSession(version) {
+  if (version !== sessionVersion) throw new ApiError('登录状态已变更，请重新操作', 401, 'SESSION_CHANGED')
+}
 
 async function refreshSession() {
   const refreshToken = getRefreshToken()
+  const version = sessionVersion
   if (!refreshToken) throw new ApiError('登录状态已失效，请重新登录', 401, 'TOKEN_EXPIRED')
-  if (refreshRequest) return refreshRequest
+  if (refreshRequest && refreshVersion === version) return refreshRequest
+  const remember = Boolean(window.localStorage.getItem(REFRESH_TOKEN_KEY))
+  refreshVersion = version
 
-  refreshRequest = (async () => {
+  const pending = (async () => {
     const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
       method: 'POST',
       headers: { 'Accept': 'application/json', 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ refreshToken }),
     })
     const payload = await response.json().catch(() => null)
+    requireCurrentSession(version)
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) clearSession()
       const fallbackMessage = response.status === 503 ? '认证服务暂时不可用，请稍后重试' : '登录状态已失效，请重新登录'
@@ -60,16 +91,22 @@ async function refreshSession() {
       throw new ApiError(payload?.message || fallbackMessage, response.status, payload?.code || fallbackCode, payload?.details)
     }
     const session = payload?.data ?? payload
-    saveSession(session, Boolean(window.localStorage.getItem(REFRESH_TOKEN_KEY)))
+    // 正常轮换不改变会话代次，避免并发业务请求被误判为跨账号响应。
+    storeSession(session, remember)
     return getAccessToken()
-  })().finally(() => { refreshRequest = null })
-
-  return refreshRequest
+  })().finally(() => {
+    if (refreshRequest === pending) refreshRequest = null
+  })
+  refreshRequest = pending
+  return pending
 }
 
+/** 统一发送认证请求；401 时最多刷新并重试一次，防止刷新失败后递归重试。 */
 async function request(path, options = {}, allowRefresh = true) {
   const headers = new Headers(options.headers || {})
   const token = readToken()
+  const version = sessionVersion
+  const guardSession = token && path !== '/auth/password/reset'
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json; charset=utf-8')
   headers.set('Accept', 'application/json')
@@ -81,6 +118,7 @@ async function request(path, options = {}, allowRefresh = true) {
     throw new ApiError('无法连接后端服务，请检查接口地址和服务状态')
   }
 
+  if (guardSession) requireCurrentSession(version)
   if (response.status === 401 && allowRefresh && path !== '/auth/refresh' && getRefreshToken()) {
     const accessToken = await refreshSession()
     headers.set('Authorization', `Bearer ${accessToken}`)
@@ -90,12 +128,14 @@ async function request(path, options = {}, allowRefresh = true) {
   if (response.status === 204) return null
   const contentType = response.headers.get('content-type') || ''
   const payload = contentType.includes('application/json') ? await response.json() : null
+  if (guardSession) requireCurrentSession(version)
   if (!response.ok) {
     throw new ApiError(payload?.message || `请求失败（${response.status}）`, response.status, payload?.code, payload?.details)
   }
   return payload?.data ?? payload
 }
 
+// 仅过滤空值，保留 false 和 0 等有效查询参数。
 function queryString(params = {}) {
   const search = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
@@ -105,6 +145,7 @@ function queryString(params = {}) {
   return value ? `?${value}` : ''
 }
 
+// 按认证、发现与发布、媒体互动、用户关系、私信和设置分组封装业务接口。
 export const api = {
   login: (body) => request('/auth/login', { method: 'POST', body: JSON.stringify(body) }),
   loginByCode: (body) => request('/auth/login/code', { method: 'POST', body: JSON.stringify(body) }),
@@ -112,7 +153,7 @@ export const api = {
   register: (body) => request('/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   checkUsername: (username) => request(`/auth/username-availability?username=${encodeURIComponent(username)}`, {}, false),
   refreshToken: (refreshToken) => request('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
-  resetPassword: (body) => request('/auth/password/reset', { method: 'POST', body: JSON.stringify(body) }),
+  resetPassword: (body) => request('/auth/password/reset', { method: 'POST', body: JSON.stringify(body) }, false),
   logout: (refreshToken) => request('/auth/logout', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
   listSavedAccounts: () => request('/auth/accounts'),
   switchAccount: (accountId) => request('/auth/switch', { method: 'POST', body: JSON.stringify({ accountId }) }),
@@ -196,6 +237,7 @@ function relationshipFlags(relationship) {
   }
 }
 
+/** 将后端用户字段和关系枚举转换为组件统一使用的展示模型。 */
 export function normalizeUser(user = {}) {
   const nickname = user.nickname || user.name || ''
   const username = user.username || ''
@@ -215,6 +257,7 @@ export function normalizeUser(user = {}) {
   }
 }
 
+/** 在用户模型上补齐资料编辑所需默认值，避免组件反复处理空字段。 */
 export function normalizeProfile(profile = {}) {
   const user = normalizeUser(profile)
   return {
@@ -234,6 +277,7 @@ export function normalizeProfile(profile = {}) {
   }
 }
 
+/** 递归整理评论与回复，使列表和详情使用同一套评论结构。 */
 export function normalizeComment(comment = {}) {
   const author = normalizeUser(comment.author)
   return {
@@ -246,6 +290,7 @@ export function normalizeComment(comment = {}) {
   }
 }
 
+/** 统一动态正文、媒体顺序和互动字段，同时补齐仅用于页面交互的本地状态。 */
 export function normalizePost(post = {}) {
   const author = normalizeUser(post.author)
   const topic = post.topic || {}
@@ -293,6 +338,7 @@ export function normalizePost(post = {}) {
   }
 }
 
+// 兼容直接数组与分页 items 结构，但游标由调用方按需处理。
 export function normalizeList(payload, normalizer = (value) => value) {
   const items = Array.isArray(payload) ? payload : payload?.items || []
   return items.map(normalizer)

@@ -39,11 +39,11 @@ public class AuthSessionGuardImpl implements AuthSessionGuard {
         if (session.getRevokedAt() != null) {
             throw ApiException.unauthorized("SESSION_REVOKED", "登录状态已失效，请重新登录");
         }
-        if (session.getExpiresAt() == null || session.getExpiresAt().isBefore(Instant.now())) {
+        if (session.getExpiresAt() == null || !session.getExpiresAt().isAfter(Instant.now())) {
             throw ApiException.unauthorized("SESSION_EXPIRED", "登录状态已过期，请重新登录");
         }
         UserEntity user = userMapper.selectById(userId);
-        if (user == null || !"ACTIVE".equalsIgnoreCase(user.getStatus())) {
+        if (user == null || user.getDeletedAt() != null || !"ACTIVE".equalsIgnoreCase(user.getStatus())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED", "账号不可用");
         }
     }

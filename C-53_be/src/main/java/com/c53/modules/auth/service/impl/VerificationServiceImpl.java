@@ -17,6 +17,10 @@ import com.c53.modules.auth.service.VerificationService;
 import com.c53.modules.auth.service.VerificationSender;
 import com.c53.modules.auth.support.AuthUtils;
 import com.c53.modules.auth.support.HmacService;
+import com.c53.modules.auth.redis.RefreshTokenStore;
+import com.c53.modules.auth.support.VerificationException;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -52,19 +56,25 @@ public class VerificationServiceImpl implements VerificationService {
     private final VerificationSender verificationSender;
     private final HmacService hmacService;
     private final AuthProperties properties;
+    private final RefreshTokenStore refreshTokenStore;
+    private final Environment environment;
 
     public VerificationServiceImpl(AuthVerificationChallengeMapper challengeMapper,
                                    UserContactMapper userContactMapper,
                                    UserMapper userMapper,
                                    VerificationSender verificationSender,
                                    HmacService hmacService,
-                                   AuthProperties properties) {
+                                   AuthProperties properties,
+                                   RefreshTokenStore refreshTokenStore,
+                                   Environment environment) {
         this.challengeMapper = challengeMapper;
         this.userContactMapper = userContactMapper;
         this.userMapper = userMapper;
         this.verificationSender = verificationSender;
         this.hmacService = hmacService;
         this.properties = properties;
+        this.refreshTokenStore = refreshTokenStore;
+        this.environment = environment;
     }
 
     /**
@@ -95,6 +105,25 @@ public class VerificationServiceImpl implements VerificationService {
         String target = AuthUtils.normalizeTarget(channel, targetValue);
         if (target == null) {
             throw ApiException.badRequest("VALIDATION_ERROR", "手机号或邮箱格式不正确");
+        }
+
+        if (properties.getVerification().isDevMode()
+                && (!environment.acceptsProfiles(Profiles.of("dev", "test"))
+                || environment.acceptsProfiles(Profiles.of("prod", "production")))) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "VERIFICATION_CONFIG_ERROR",
+                    "验证码服务未配置，请联系管理员");
+        }
+        if ("reset_password".equals(scene)) {
+            limit("reset-send:ip", hmacService.hashAccount("ip:" + ip), Duration.ofMinutes(1),
+                    properties.getLimits().getResetSendPerIpPerMinute());
+            limit("reset-send:target", hmacService.hashAccount(channel + ":" + target), Duration.ofHours(1),
+                    properties.getLimits().getResetSendPerTargetPerHour());
+            limit("reset-send:ip-day", hmacService.hashAccount("ip:" + ip), Duration.ofDays(1),
+                    properties.getLimits().getResetSendPerIpPerDay());
+            limit("reset-send:target-day", hmacService.hashAccount(channel + ":" + target), Duration.ofDays(1),
+                    properties.getLimits().getResetSendPerTargetPerDay());
+            limit("reset-send:cooldown", hmacService.hashAccount(channel + ":" + target),
+                    properties.getVerification().getResendInterval(), 1);
         }
 
         // 2. 注册场景下，联系方式已被占用则无需发送
@@ -172,6 +201,15 @@ public class VerificationServiceImpl implements VerificationService {
     @Override
     public ChallengeRow verifyAndConsume(String challengeId, String code, String scene,
                                          String channel, String target, Instant now) {
+        try {
+            return verifyLocked(challengeId, code, scene, channel, target, now);
+        } catch (ApiException exception) {
+            throw new VerificationException(exception);
+        }
+    }
+
+    private ChallengeRow verifyLocked(String challengeId, String code, String scene,
+                                      String channel, String target, Instant now) {
         // 1. 加行锁读取挑战
         AuthVerificationChallengeEntity entity = challengeMapper.selectOne(
                 Wrappers.<AuthVerificationChallengeEntity>lambdaQuery()
@@ -187,8 +225,8 @@ public class VerificationServiceImpl implements VerificationService {
                 || !target.equals(challenge.target())) {
             throw ApiException.badRequest("VERIFICATION_TARGET_MISMATCH", "验证码对应目标、渠道或场景不一致");
         }
-        // 3. 已消费或已失效
-        if ("CONSUMED".equals(challenge.status()) || "INVALIDATED".equals(challenge.status())) {
+        // 仅 ACTIVE 挑战可参与校验，PENDING 不允许被错误尝试激活。
+        if (!"ACTIVE".equals(challenge.status()) && !"FAILED".equals(challenge.status())) {
             throw invalidCode();
         }
         // 4. 失败次数已耗尽
@@ -420,6 +458,7 @@ public class VerificationServiceImpl implements VerificationService {
     private void markActive(String id, String provider, String providerMessageId, Instant now) {
         challengeMapper.update(null, Wrappers.<AuthVerificationChallengeEntity>lambdaUpdate()
                 .eq(AuthVerificationChallengeEntity::getId, id)
+                .eq(AuthVerificationChallengeEntity::getStatus, "PENDING")
                 .set(AuthVerificationChallengeEntity::getStatus, "ACTIVE")
                 .set(AuthVerificationChallengeEntity::getProvider, provider)
                 .set(AuthVerificationChallengeEntity::getProviderMessageId, providerMessageId)
@@ -498,6 +537,14 @@ public class VerificationServiceImpl implements VerificationService {
      *
      * @return 401 业务异常
      */
+    private void limit(String scope, String identity, Duration ttl, int limit) {
+        long count = refreshTokenStore.incrementCounter(scope, identity, ttl);
+        if (count > limit) {
+            throw ApiException.tooManyRequests("RATE_LIMITED", "验证码请求过于频繁",
+                    List.of(Map.of("retryAfter", ttl.toSeconds())));
+        }
+    }
+
     private static ApiException invalidCode() {
         return new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_VERIFICATION_CODE", "验证码错误或已经使用");
     }

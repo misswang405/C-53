@@ -1,4 +1,5 @@
--- C-53 认证模块数据库表结构 v2.2
+-- C-53 认证模块数据库表结构 v2.3
+-- 表按用户资料、设备会话、令牌审计和验证码挑战分组，敏感凭证只保存摘要。
 -- 位置：后端认证模块资源，启动时由 Spring SQL Init 执行
 -- 依据：docs/auth-api.md v1.2、docs/db/auth-database-design.md
 -- 目标数据库：MySQL 5.7.8+ / MySQL 8.0，InnoDB，utf8mb4
@@ -13,6 +14,8 @@
 --   7. 同一设备下同一用户最多一个未撤销会话，由唯一索引兜底。
 --   8. 审计表不再级联依赖业务表，避免清理会话时丢失审计链路。
 --   9. Refresh Token 白名单由 Redis 权威维护，数据库仅保留家族和签发审计。
+--  10. 支持 reset_password 挑战及 auth_cleanup_tasks 持久化撤销补偿。
+--      存量环境必须人工选择 migration 中与 MySQL 版本匹配的增量脚本；基线不会修改旧 CHECK。
 --
 -- 注意：
 --   - 时间统一按 UTC 保存，应用连接设置 time_zone = '+00:00'。
@@ -398,7 +401,7 @@ CREATE TABLE IF NOT EXISTS auth_verification_challenges (
     device_id            VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL
                              COMMENT '发起请求的设备',
     scene                VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
-                             COMMENT 'register / login',
+                             COMMENT 'register / login / reset_password',
     channel              VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
                              COMMENT 'sms / email',
     target               VARCHAR(254) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL
@@ -444,7 +447,7 @@ CREATE TABLE IF NOT EXISTS auth_verification_challenges (
         FOREIGN KEY (device_id) REFERENCES auth_devices (id)
         ON DELETE SET NULL ON UPDATE RESTRICT,
     CONSTRAINT chk_avc_scene
-        CHECK (scene IN ('register', 'login')),
+        CHECK (scene IN ('register', 'login', 'reset_password')),
     CONSTRAINT chk_avc_channel
         CHECK (channel IN ('sms', 'email')),
     CONSTRAINT chk_avc_status
@@ -529,3 +532,43 @@ CREATE TABLE IF NOT EXISTS auth_user_agreements (
   COLLATE = utf8mb4_unicode_ci
   ROW_FORMAT = DYNAMIC
   COMMENT = '用户协议同意记录';
+
+
+-- ---------------------------------------------------------------------------
+-- 12. Redis 家族撤销补偿任务
+--     与密码变更/会话撤销同事务提交；无业务外键，业务清理不能删除未完成任务。
+--     重试先吊销家族，再删除 auth_refresh_tokens 审计中的摘要；不保存原始令牌。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_cleanup_tasks (
+    id            VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
+                      COMMENT '清理任务 ID，如 acl_01K5...',
+    family_id     VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
+                      COMMENT '待吊销令牌家族 ID，逻辑引用，无级联删除',
+    expires_at    DATETIME(3) NOT NULL
+                      COMMENT '家族原过期时间（UTC），计算吊销标记剩余 TTL',
+    reason        VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
+                      COMMENT '吊销原因，如 password_changed / logout / session_revoked',
+    status        VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'PENDING'
+                      COMMENT 'PENDING / COMPLETED；失败保留 PENDING',
+    attempts      INT UNSIGNED NOT NULL DEFAULT 0
+                      COMMENT '已记录失败次数，也是延期的乐观并发版本',
+    next_retry_at DATETIME(3) NOT NULL
+                      COMMENT '下一次可重试时间（UTC）；指数退避 5 秒至 1 小时',
+    completed_at  DATETIME(3) NULL
+                      COMMENT 'Redis 家族吊销及摘要删除均成功后的时间（UTC）',
+    created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                      ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_act_pending_retry (status, next_retry_at, id),
+    KEY idx_act_family (family_id),
+    CONSTRAINT chk_act_status
+        CHECK (status IN ('PENDING', 'COMPLETED')),
+    CONSTRAINT chk_act_completed
+        CHECK ((status = 'PENDING' AND completed_at IS NULL)
+            OR (status = 'COMPLETED' AND completed_at IS NOT NULL))
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_unicode_ci
+  ROW_FORMAT = DYNAMIC
+  COMMENT = 'Redis 家族撤销持久化补偿任务';

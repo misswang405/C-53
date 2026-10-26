@@ -28,7 +28,7 @@ public class AuthVerificationChallengeEntity {
     /** 发起设备 ID。 */
     private String deviceId;
 
-    /** 使用场景：register/login。 */
+    /** 使用场景：register/login/reset_password。 */
     private String scene;
 
     /** 发送渠道：sms/email。 */

@@ -131,7 +131,7 @@ public final class AuthUtils {
      * 规范化验证码使用场景。
      *
      * @param scene 原始场景
-     * @return {@code register}、{@code login}，非法时返回 {@code null}
+     * @return {@code register}、{@code login}、{@code reset_password}，非法时返回 {@code null}
      */
     public static String normalizeScene(String scene) {
         String value = trimToNull(scene);
@@ -139,7 +139,8 @@ public final class AuthUtils {
             return null;
         }
         value = value.toLowerCase(Locale.ROOT);
-        return ("register".equals(value) || "login".equals(value)) ? value : null;
+        return ("register".equals(value) || "login".equals(value)
+                || "reset_password".equals(value)) ? value : null;
     }
 
     /**

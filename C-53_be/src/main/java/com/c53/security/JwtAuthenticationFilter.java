@@ -1,5 +1,12 @@
 package com.c53.security;
 
+import com.c53.common.presence.OnlinePresenceRecorder;
+import com.c53.common.ApiException;
+import com.c53.common.ApiErrorResponse;
+import com.c53.common.RequestIds;
+import com.c53.modules.auth.service.AuthSessionGuard;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.dao.DataAccessException;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -37,9 +44,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     public static final String INVALID_ACCESS_TOKEN = "INVALID_ACCESS_TOKEN";
 
     private final JwtService jwtService;
+    private final OnlinePresenceRecorder onlinePresenceRecorder;
+    private final AuthSessionGuard sessionGuard;
+    private final ObjectMapper objectMapper;
 
-    public JwtAuthenticationFilter(JwtService jwtService) {
+    public JwtAuthenticationFilter(JwtService jwtService, OnlinePresenceRecorder onlinePresenceRecorder,
+                                  AuthSessionGuard sessionGuard,
+                                  ObjectMapper objectMapper) {
         this.jwtService = jwtService;
+        this.onlinePresenceRecorder = onlinePresenceRecorder;
+        this.sessionGuard = sessionGuard;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -58,11 +73,26 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = header.substring(7).trim();
             try {
                 JwtService.AccessTokenClaims claims = jwtService.parse(token);
+                sessionGuard.requireActive(claims.userId(), claims.sessionId());
                 AuthPrincipal principal = new AuthPrincipal(claims.userId(), claims.sessionId());
                 UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                         principal, null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
                 // 认证成功：后续 Controller 可直接获取当前用户
                 SecurityContextHolder.getContext().setAuthentication(authentication);
+                // 在线人数统计，内部按用户做写入节流，异常不影响主流程
+                onlinePresenceRecorder.touch(claims.userId());
+            } catch (ApiException exception) {
+                request.setAttribute(TOKEN_ERROR_ATTRIBUTE, exception.getCode());
+                SecurityContextHolder.clearContext();
+            } catch (DataAccessException exception) {
+                SecurityContextHolder.clearContext();
+                response.setStatus(503);
+                response.setContentType("application/json");
+                response.setCharacterEncoding("UTF-8");
+                objectMapper.writeValue(response.getOutputStream(), new ApiErrorResponse(
+                        "DEPENDENCY_UNAVAILABLE", "认证服务暂时不可用，请稍后重试", null,
+                        RequestIds.current()));
+                return;
             } catch (ExpiredJwtException exception) {
                 // 区分“过期”和“非法”，便于前端决定刷新还是重新登录
                 request.setAttribute(TOKEN_ERROR_ATTRIBUTE, TOKEN_EXPIRED);

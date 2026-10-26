@@ -45,6 +45,9 @@ public class RefreshTokenStore {
      * 令牌 TTL、tokenHash、家族 TTL、tokenId。</p>
      */
     private static final DefaultRedisScript<Long> INITIAL_SCRIPT = new DefaultRedisScript<>("""
+            if redis.call('EXISTS', KEYS[3]) == 1 then
+                return 0
+            end
             redis.call('HSET', KEYS[1], 'sessionId', ARGV[1], 'familyId', ARGV[2], 'userId', ARGV[3],
                        'issuedAt', ARGV[4], 'expiresAt', ARGV[5], 'tokenId', ARGV[9])
             redis.call('EXPIRE', KEYS[1], ARGV[6])
@@ -111,6 +114,10 @@ public class RefreshTokenStore {
      */
     private static final DefaultRedisScript<Long> REVOKE_SCRIPT = new DefaultRedisScript<>("""
             redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+            local current = redis.call('GET', KEYS[2])
+            if current then
+                redis.call('DEL', ARGV[3] .. current)
+            end
             redis.call('DEL', KEYS[2])
             return 1
             """, Long.class);
@@ -121,6 +128,9 @@ public class RefreshTokenStore {
      * <p>返回 1 表示回滚成功；0 表示状态已变化，放弃回滚。</p>
      */
     private static final DefaultRedisScript<Long> ROLLBACK_SCRIPT = new DefaultRedisScript<>("""
+            if redis.call('EXISTS', KEYS[5]) == 1 then
+                return 0
+            end
             -- 当前指针已不是新令牌，说明有并发操作，不能盲目回滚
             if redis.call('GET', KEYS[1]) ~= ARGV[2] then
                 return 0
@@ -183,12 +193,18 @@ public class RefreshTokenStore {
      * @param familyTtl 家族有效期
      */
     public void writeInitial(RefreshTokenMeta meta, String tokenHash, Duration tokenTtl, Duration familyTtl) {
-        run("write-initial", () -> redis.execute(INITIAL_SCRIPT,
-                List.of(tokenKey(tokenHash), currentKey(meta.familyId())),
+        Long result = run("write-initial", () -> redis.execute(INITIAL_SCRIPT,
+                List.of(tokenKey(tokenHash), currentKey(meta.familyId()), revokedKey(meta.familyId())),
                 meta.sessionId(), meta.familyId(), meta.userId(),
                 Long.toString(meta.issuedAt()), Long.toString(meta.expiresAt()),
                 Long.toString(seconds(tokenTtl)), tokenHash, Long.toString(seconds(familyTtl)),
                 meta.tokenId()));
+        if (result == null) {
+            throw new DependencyUnavailableException("认证令牌服务暂时不可用");
+        }
+        if (result != 1L) {
+            throw com.c53.common.ApiException.unauthorized("SESSION_REVOKED", "登录状态已失效，请重新登录");
+        }
     }
 
     /**
@@ -301,7 +317,7 @@ public class RefreshTokenStore {
                                     Duration oldTokenTtl, Duration familyTtl) {
         Long result = run("rollback-rotation", () -> redis.execute(ROLLBACK_SCRIPT,
                 List.of(currentKey(oldMeta.familyId()), tokenKey(newHash), usedKey(oldHash),
-                        tokenKey(oldHash)),
+                        tokenKey(oldHash), revokedKey(oldMeta.familyId())),
                 oldHash, newHash, oldMeta.sessionId(), oldMeta.familyId(), oldMeta.userId(),
                 Long.toString(oldMeta.issuedAt()), Long.toString(oldMeta.expiresAt()),
                 Long.toString(seconds(oldTokenTtl)), Long.toString(seconds(familyTtl)),
@@ -324,7 +340,7 @@ public class RefreshTokenStore {
         long ttlSeconds = seconds(ttl);
         run("revoke-family", () -> {
             redis.execute(REVOKE_SCRIPT, List.of(revokedKey(familyId), currentKey(familyId)),
-                    reason, Long.toString(ttlSeconds));
+                    reason, Long.toString(ttlSeconds), prefix + ":rt:token:");
             if (tokenHashes != null && !tokenHashes.isEmpty()) {
                 List<String> keys = new ArrayList<>(tokenHashes.size());
                 for (String hash : tokenHashes) {
@@ -348,7 +364,10 @@ public class RefreshTokenStore {
         String key = prefix + ":rl:" + scope + ":" + identity;
         Long value = run("rate-limit", () -> redis.execute(COUNTER_SCRIPT, List.of(key),
                 Long.toString(seconds(ttl))));
-        return value == null ? 0 : value;
+        if (value == null) {
+            throw new DependencyUnavailableException("认证限流服务暂时不可用");
+        }
+        return value;
     }
 
     /** 令牌元数据 Key。 */

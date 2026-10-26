@@ -6,6 +6,7 @@ import com.c53.modules.auth.service.AuthService.RequestMeta;
 import com.c53.modules.auth.service.VerificationService;
 import com.c53.modules.auth.dto.AuthDtos.*;
 import com.c53.common.ApiResponse;
+import com.c53.common.ClientIp;
 import com.c53.common.RequestIds;
 import com.c53.config.AuthProperties;
 import com.c53.security.AuthPrincipal;
@@ -69,14 +70,15 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.ok(response));
     }
 
-    /**
-     * 注册。
-     *
-     * @param request        注册请求
-     * @param servletRequest 当前 HTTP 请求
-     * @param servletResponse 当前 HTTP 响应
-     * @return 201 + 会话信息
-     */
+    /** 通过重置挑战更新密码，成功不自动创建新会话。 */
+    @PostMapping("/password/reset")
+    public ResponseEntity<Void> resetPassword(@RequestBody ResetPasswordRequest request,
+                                               HttpServletRequest servletRequest) {
+        authService.resetPassword(request, meta(servletRequest));
+        return ResponseEntity.noContent().build();
+    }
+
+    /** 注册成功后建立登录会话并下发设备 Cookie。 */
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<AuthSessionResponse>> register(
             @RequestBody RegisterRequest request, HttpServletRequest servletRequest,
@@ -169,20 +171,8 @@ public class AuthController {
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
     }
 
-    /**
-     * 获取客户端 IP。
-     *
-     * <p>优先读取反向代理设置的 {@code X-Forwarded-For} 第一个地址。</p>
-     *
-     * @param request 当前 HTTP 请求
-     * @return 客户端 IP
-     */
     private static String clientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
+        return ClientIp.resolve(request);
     }
 
     /**

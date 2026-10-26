@@ -190,7 +190,7 @@ public class AuthProperties {
         private int maxAttempts = 5;
 
         /** 开发模式：不真正发送短信/邮件，只写入日志。 */
-        private boolean devMode = true;
+        private boolean devMode = false;
 
         /** 开发模式下使用的固定验证码。 */
         private String devCode = "123456";
@@ -316,6 +316,29 @@ public class AuthProperties {
 
         /** 单 IP 每分钟用户名可用性检查上限。 */
         private int usernameCheckPerIpPerMinute = 60;
+
+        private int resetSendPerIpPerMinute = 10;
+        private int resetSendPerTargetPerHour = 5;
+        private int resetSendPerIpPerDay = 100;
+        private int resetSendPerTargetPerDay = 10;
+        private int resetSubmitPerIpPerMinute = 10;
+        private int resetSubmitPerTargetPerWindow = 5;
+        private Duration resetSubmitWindow = Duration.ofMinutes(15);
+
+        public int getResetSendPerIpPerMinute() { return resetSendPerIpPerMinute; }
+        public void setResetSendPerIpPerMinute(int value) { resetSendPerIpPerMinute = value; }
+        public int getResetSendPerTargetPerHour() { return resetSendPerTargetPerHour; }
+        public void setResetSendPerTargetPerHour(int value) { resetSendPerTargetPerHour = value; }
+        public int getResetSendPerIpPerDay() { return resetSendPerIpPerDay; }
+        public void setResetSendPerIpPerDay(int value) { resetSendPerIpPerDay = value; }
+        public int getResetSendPerTargetPerDay() { return resetSendPerTargetPerDay; }
+        public void setResetSendPerTargetPerDay(int value) { resetSendPerTargetPerDay = value; }
+        public int getResetSubmitPerIpPerMinute() { return resetSubmitPerIpPerMinute; }
+        public void setResetSubmitPerIpPerMinute(int value) { resetSubmitPerIpPerMinute = value; }
+        public int getResetSubmitPerTargetPerWindow() { return resetSubmitPerTargetPerWindow; }
+        public void setResetSubmitPerTargetPerWindow(int value) { resetSubmitPerTargetPerWindow = value; }
+        public Duration getResetSubmitWindow() { return resetSubmitWindow; }
+        public void setResetSubmitWindow(Duration value) { resetSubmitWindow = value; }
 
         public int getLoginPerIpPerMinute() {
             return loginPerIpPerMinute;

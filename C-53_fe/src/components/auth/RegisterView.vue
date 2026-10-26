@@ -1,4 +1,6 @@
 <script setup>
+// 注册页面：收集用户资料、验证码和协议同意信息。
+// 注册表单、错误信息及验证码发送状态由父组件管理。
 defineProps({
   form: { type: Object, required: true },
   error: { type: String, default: '' },
@@ -9,6 +11,7 @@ defineProps({
   maskedTarget: { type: String, default: '' },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits([
   'submit',
   'back-home',

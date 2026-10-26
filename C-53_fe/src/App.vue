@@ -1,4 +1,5 @@
 <script setup>
+// 应用根组件：统一协调登录会话、页面导航、草稿发布和跨页面数据同步。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import LoginView from './components/auth/LoginView.vue'
 import RegisterView from './components/auth/RegisterView.vue'
@@ -21,6 +22,7 @@ import {
   clearSession,
   getAccessToken,
   getRefreshToken,
+  getSessionVersion,
   normalizeComment,
   normalizeList,
   normalizePost,
@@ -31,6 +33,7 @@ import {
 import { views } from './data/navigation'
 import { permissionItems, settingsNav, socialOptions, visibilityOptions } from './data/settings'
 
+// 公开列表、个人列表与私信分别缓存，避免页面切换时混用不同接口的数据。
 const people = ref([])
 const followers = ref([])
 const following = ref([])
@@ -47,6 +50,7 @@ const onlineCount = ref(0)
 const dataLoading = ref(false)
 const dataError = ref('')
 
+// 认证相关表单、验证码挑战标识和倒计时统一维护，切换页面时按场景重置。
 const activeView = ref('feed')
 const isAuthenticated = ref(Boolean(getAccessToken()))
 const activeAccountId = ref('')
@@ -75,6 +79,9 @@ const resetError = ref('')
 const resetPasswordVisible = ref(false)
 const resetConfirmPasswordVisible = ref(false)
 const resetVerificationTarget = ref('')
+const resetVerificationId = ref('')
+const resetSubmitting = ref(false)
+let resetChallengeVersion = 0
 const resetMaskedTarget = ref('')
 const resetCodeCountdown = ref(0)
 const resetCodeSending = ref(false)
@@ -309,6 +316,7 @@ async function saveDraft(force = false) {
   }
 }
 
+// 定时提交前先落为草稿，已有草稿携带版本号更新，后续只提交动态 ID。
 async function preparePostForSubmit() {
   const content = draft.value.trim()
   const mediaIds = mediaItems.value.map((item) => item.mediaId).filter(Boolean)
@@ -347,7 +355,7 @@ function normalizeTopic(topic = {}) {
   return {
     id: topic.id || '',
     name: topic.name || '',
-    count: String(topic.discussionCount ?? topic.count ?? 0),
+    count: String(topic.postCount ?? topic.discussionCount ?? topic.count ?? 0),
     color: topic.color || '#5965f2',
   }
 }
@@ -377,10 +385,22 @@ function normalizeNotification(notification = {}) {
 
 function normalizeAccount(account = {}) {
   const user = normalizeUser(account.user || account)
-  return { ...user, id: account.accountId || user.id }
+  return { ...user, id: account.accountId || user.id, current: Boolean(account.current) }
+}
+
+// 关注流由服务端强制登录，未登录时前端直接拦截，避免发出必然失败的请求
+function requiresLoginForFeed() {
+  return feedFilter.value === '正在关注' && !isAuthenticated.value
 }
 
 async function loadFeed() {
+  if (requiresLoginForFeed()) {
+    posts.value = []
+    dataLoading.value = false
+    dataError.value = ''
+    showToast('登录后查看正在关注的动态')
+    return
+  }
   dataLoading.value = true
   dataError.value = ''
   try {
@@ -394,6 +414,7 @@ async function loadFeed() {
   }
 }
 
+// 公开数据独立结算：某个接口失败不阻断话题、推荐成员和在线人数的展示。
 async function loadPublicData() {
   const [feedResult, topicsResult, creatorsResult, summaryResult] = await Promise.allSettled([
     api.getFeed({ scope: feedScopes[feedFilter.value], limit: 20 }),
@@ -413,22 +434,26 @@ async function loadPublicData() {
   onlineCount.value = summaryResult.status === 'fulfilled' ? Number(summaryResult.value?.onlineCount || 0) : 0
 }
 
+// 私有数据只在登录后加载；用户接口明确返回未授权时清除本地登录状态。
 async function loadPrivateData() {
   if (!isAuthenticated.value) return
+  const version = getSessionVersion()
   const [profileResult, postsResult, notificationsResult, accountsResult] = await Promise.allSettled([
-    api.getMyProfile(),
+    api.getMe(),
     api.getMyPosts({ limit: 50 }),
     api.getNotifications(),
     api.listSavedAccounts(),
   ])
 
+  if (version !== getSessionVersion() || !isAuthenticated.value) return
   if (profileResult.status === 'rejected' && profileResult.reason?.status === 401) {
     clearSession()
     isAuthenticated.value = false
     return
   }
   if (profileResult.status === 'fulfilled') {
-    profileInfo.value = normalizeProfile(profileResult.value)
+    const currentUser = profileResult.value?.user || profileResult.value
+    profileInfo.value = normalizeProfile(currentUser)
     profileInfo.value.gender = genderFromApi[profileInfo.value.gender] || '保密'
     profileDraft.value = { ...profileInfo.value }
     activeAccountId.value = profileInfo.value.id || ''
@@ -436,6 +461,10 @@ async function loadPrivateData() {
   profilePosts.value = postsResult.status === 'fulfilled' ? normalizeList(postsResult.value, normalizePost) : []
   notifications.value = notificationsResult.status === 'fulfilled' ? normalizeList(notificationsResult.value, normalizeNotification) : []
   savedAccounts.value = accountsResult.status === 'fulfilled' ? normalizeList(accountsResult.value, normalizeAccount) : []
+  // 接口未返回当前用户时，用后端标记的当前账号兜底，避免高亮错位
+  if (!activeAccountId.value) {
+    activeAccountId.value = savedAccounts.value.find((account) => account.current)?.id || ''
+  }
 }
 
 async function loadBookmarks() {
@@ -472,13 +501,16 @@ async function loadMessages(conversationId) {
   }))
 }
 
+// 回填期间关闭自动保存，待响应式更新完成后再开启，避免把加载结果当成用户修改。
 async function loadSettingsData() {
+  const version = getSessionVersion()
   settingsReady.value = false
   const [settingsResult, blockedResult, appsResult] = await Promise.allSettled([
     api.getSettings(),
     api.getBlockedUsers(),
     api.getAuthorizedApps(),
   ])
+  if (version !== getSessionVersion() || !isAuthenticated.value) return
   if (settingsResult.status === 'fulfilled') {
     const settings = settingsResult.value || {}
     visibilitySettings.value = {
@@ -507,7 +539,7 @@ async function loadSettingsData() {
     ? normalizeList(appsResult.value, (app) => ({ id: app.id, name: app.appName, scope: (app.scopes || []).join('、'), lastUsed: app.lastUsedAt || '', icon: app.appName?.slice(0, 1) || '' }))
     : []
   await nextTick()
-  settingsReady.value = true
+  if (version === getSessionVersion() && isAuthenticated.value) settingsReady.value = true
 }
 
 async function initializeApp() {
@@ -533,6 +565,7 @@ function switchView(view) {
   nextTick(() => window.scrollTo({ top: 0, behavior: 'smooth' }))
 }
 
+// 已保存草稿先更新再发布；新动态直接创建，成功后同步信息流和个人列表。
 async function publishPost() {
   if (!requireAuthentication('feed')) return false
   if (!draft.value.trim()) {
@@ -1234,8 +1267,10 @@ function clearResetCodeTimer() {
 }
 
 function resetPasswordVerification() {
+  resetChallengeVersion += 1
   clearResetCodeTimer()
   resetVerificationTarget.value = ''
+  resetVerificationId.value = ''
   resetMaskedTarget.value = ''
   resetCodeCountdown.value = 0
   resetForm.value.code = ''
@@ -1264,17 +1299,25 @@ async function sendResetCode() {
     resetError.value = resetForm.value.identifierType === 'EMAIL' ? '请输入正确的邮箱地址' : '请输入正确的中国大陆手机号'
     return
   }
-  if (resetCodeSending.value || resetCodeCountdown.value > 0) return
+  if (resetCodeSending.value || resetCodeCountdown.value > 0 || resetSubmitting.value) return
 
+  resetPasswordVerification()
   resetCodeSending.value = true
   resetError.value = ''
+  const challengeVersion = resetChallengeVersion
   try {
     const challenge = await api.sendVerificationCode({ scene: 'RESET_PASSWORD', ...identity })
-    if (identifierKey(normalizeIdentifierForType(resetForm.value.identifier, resetForm.value.identifierType)) !== identifierKey(identity)) return
+    if (
+      challengeVersion !== resetChallengeVersion ||
+      identifierKey(normalizeIdentifierForType(resetForm.value.identifier, resetForm.value.identifierType)) !== identifierKey(identity)
+    ) return
     resetVerificationTarget.value = identifierKey(identity)
-    resetMaskedTarget.value = challenge.identifier || identity.identifier
-    startResetCodeCountdown(challenge.resendAfterSeconds || 60)
+    resetVerificationId.value = challenge.verificationId || ''
+    resetMaskedTarget.value = challenge.maskedTarget || challenge.identifier || identity.identifier
+    startResetCodeCountdown(challenge.resendAfterSeconds ?? challenge.resendAfter ?? 0)
+    if (!resetVerificationId.value) resetError.value = '未获取到有效验证信息，请重新获取验证码'
   } catch (error) {
+    if (challengeVersion !== resetChallengeVersion) return
     resetError.value = errorText(error)
   } finally {
     resetCodeSending.value = false
@@ -1282,9 +1325,14 @@ async function sendResetCode() {
 }
 
 async function submitPasswordReset() {
+  if (resetSubmitting.value || resetCodeSending.value) return
   const identity = normalizeIdentifierForType(resetForm.value.identifier, resetForm.value.identifierType)
   if (!identity) {
     resetError.value = resetForm.value.identifierType === 'EMAIL' ? '请输入正确的邮箱地址' : '请输入正确的中国大陆手机号'
+    return
+  }
+  if (!resetVerificationId.value || resetVerificationTarget.value !== identifierKey(identity)) {
+    resetError.value = '请先获取当前手机号或邮箱的验证码'
     return
   }
   if (!/^\d{6}$/.test(resetForm.value.code)) {
@@ -1300,8 +1348,62 @@ async function submitPasswordReset() {
     return
   }
 
+  resetSubmitting.value = true
+  resetError.value = ''
+  const version = getSessionVersion()
+  const challengeVersion = resetChallengeVersion
   try {
-    await api.resetPassword({ ...identity, code: resetForm.value.code, newPassword: resetForm.value.newPassword })
+    await api.resetPassword({
+      ...identity,
+      verificationId: resetVerificationId.value,
+      code: resetForm.value.code,
+      newPassword: resetForm.value.newPassword,
+    })
+    clearSession()
+    isAuthenticated.value = false
+    profileInfo.value = normalizeProfile()
+    profilePosts.value = []
+    savedPosts.value = []
+    notifications.value = []
+    conversations.value = []
+    chatMessages.value = []
+    savedAccounts.value = []
+    activeAccountId.value = ''
+    profileDraft.value = { ...profileInfo.value }
+    followers.value = []
+    following.value = []
+    posts.value = []
+    memberPosts.value = []
+    activeConversation.value = null
+    chatDraft.value = ''
+    activePost.value = null
+    selectedMember.value = null
+    sharePostTarget.value = null
+    sharePanelOpen.value = false
+    replyingToId.value = null
+    nestedReply.value = ''
+    profileConnectionsOpen.value = false
+    connectionSearch.value = ''
+    profileEditorOpen.value = false
+    birthPickerOpen.value = false
+    scheduleOpen.value = false
+    resetComposer()
+    settingsReady.value = false
+    window.clearTimeout(settingsSaveTimer)
+    blockedUsers.value = []
+    authorizedApps.value = []
+    blockedListOpen.value = false
+    settingsActiveSection.value = 'account'
+    permissionStates.value = { camera: '未授权', photos: '使用时询问', microphone: '未授权', location: '未授权', contacts: '未授权' }
+    visibilitySettings.value = { profile: '公开', posts: '公开', saved: '仅自己可见', following: '好友可见' }
+    socialSettings.value = { messages: '互相关注的人', comments: '所有人', mentions: '我关注的人' }
+    recommendationSettings.value = { content: true, ads: false }
+    specialModes.value = { teen: false, elder: false, private: false }
+    loginForm.value.password = ''
+    resetLoginVerification()
+    registerForm.value.password = ''
+    registerForm.value.confirmPassword = ''
+    resetRegisterVerification()
     resetForm.value = { identifierType: 'PHONE', identifier: '', code: '', newPassword: '', confirmPassword: '' }
     resetPasswordVerification()
     resetPasswordVisible.value = false
@@ -1310,7 +1412,12 @@ async function submitPasswordReset() {
     openLogin(loginReturnView.value)
     showToast('密码已重置，请重新登录')
   } catch (error) {
-    resetError.value = errorText(error)
+    if (version !== getSessionVersion() || challengeVersion !== resetChallengeVersion) return
+    resetError.value = error?.code === 'NETWORK_ERROR'
+      ? '网络异常，无法确认重置结果，请尝试新密码登录或重新获取验证码'
+      : errorText(error)
+  } finally {
+    resetSubmitting.value = false
   }
 }
 
@@ -1539,6 +1646,7 @@ async function goToComments(post) {
 let webMcpLifecycle
 let settingsSaveTimer
 
+// 设置变更防抖保存，展示文案在请求边界转换回后端枚举。
 function scheduleSettingsSave(section) {
   if (!settingsReady.value || activeView.value !== 'settings') return
   window.clearTimeout(settingsSaveTimer)
@@ -1578,6 +1686,13 @@ watch(feedFilter, () => {
   if (activeView.value === 'feed') void loadFeed()
 })
 
+// 退出登录后若仍停在关注流，回退到推荐流，避免继续展示需登录的内容
+watch(isAuthenticated, (authenticated) => {
+  if (!authenticated && feedFilter.value === '正在关注') {
+    feedFilter.value = '为你推荐'
+  }
+})
+
 // 话题列表加载后，把默认话题纠正为服务端存在的项
 watch(topics, (list) => {
   if (!list.length) return
@@ -1591,6 +1706,7 @@ watch([draft, draftTopic, mediaItems], () => {
   draftSaveTimer = window.setTimeout(() => { void saveDraft() }, 3000)
 }, { deep: true })
 
+// 联系方式变化后丢弃旧验证码挑战，防止验证码用于另一个账号。
 watch(() => loginForm.value.account, (account) => {
   if (identifierKey(normalizeIdentifier(account)) === loginVerificationTarget.value) return
   resetLoginVerification()
@@ -1605,12 +1721,20 @@ watch(() => [registerForm.value.identifierType, registerForm.value.identifier], 
 })
 
 watch(() => [resetForm.value.identifierType, resetForm.value.identifier], () => {
-  const identity = normalizeIdentifierForType(resetForm.value.identifier, resetForm.value.identifierType)
-  if (identifierKey(identity) === resetVerificationTarget.value) return
   resetPasswordVerification()
   resetError.value = ''
-})
+}, { flush: 'sync' })
 
+watch(activeView, (view, previousView) => {
+  if (previousView !== 'reset-password' || view === 'reset-password') return
+  resetPasswordVerification()
+  resetForm.value.newPassword = ''
+  resetForm.value.confirmPassword = ''
+  resetPasswordVisible.value = false
+  resetConfirmPasswordVisible.value = false
+}, { flush: 'sync' })
+
+// 按页面惰性加载私有数据，并只在设置页绑定滚动定位监听。
 watch(activeView, (view) => {
   window.removeEventListener('scroll', handleSettingsScroll)
   if (view === 'saved' && isAuthenticated.value) void loadBookmarks()
@@ -1778,6 +1902,7 @@ onBeforeUnmount(() => {
         :confirm-password-visible="resetConfirmPasswordVisible"
         :code-countdown="resetCodeCountdown"
         :code-sending="resetCodeSending"
+        :loading="resetSubmitting"
         :masked-target="resetMaskedTarget"
         @submit="submitPasswordReset"
         @back-home="switchView('feed')"

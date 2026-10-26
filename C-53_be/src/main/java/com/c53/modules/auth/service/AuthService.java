@@ -7,6 +7,7 @@ import com.c53.modules.auth.dto.AuthDtos.MeResponse;
 import com.c53.modules.auth.dto.AuthDtos.RefreshRequest;
 import com.c53.modules.auth.dto.AuthDtos.RefreshResponse;
 import com.c53.modules.auth.dto.AuthDtos.RegisterRequest;
+import com.c53.modules.auth.dto.AuthDtos.ResetPasswordRequest;
 import com.c53.modules.auth.dto.AuthDtos.SavedAccountsResponse;
 import com.c53.modules.auth.dto.AuthDtos.SwitchRequest;
 import com.c53.modules.auth.dto.AuthDtos.UsernameAvailabilityResponse;
@@ -19,6 +20,9 @@ import com.c53.security.AuthPrincipal;
  * Controller 只负责 HTTP 映射，所有业务校验、事务和安全策略都在实现类中完成。</p>
  */
 public interface AuthService {
+
+    /** 验证重置挑战、更新密码并撤销该用户全部旧会话。 */
+    void resetPassword(ResetPasswordRequest request, RequestMeta meta);
 
     /**
      * 注册新用户并直接建立登录会话。

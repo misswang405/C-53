@@ -19,7 +19,7 @@ public final class AuthDtos {
     /**
      * 发送验证码请求。
      *
-     * @param scene          使用场景：{@code register} 或 {@code login}
+     * @param scene          使用场景：{@code register}、{@code login} 或 {@code reset_password}
      * @param channel        发送渠道：{@code sms} 或 {@code email}
      * @param target         接收方：手机号或邮箱
      * @param identifierType 旧版字段：目标类型
@@ -111,11 +111,12 @@ public final class AuthDtos {
     ) {
     }
 
-    /**
-     * 刷新令牌请求。
-     *
-     * @param refreshToken 原始 Refresh Token
-     */
+    /** 密码找回请求，挑战 ID 必填，不接受登录/注册挑战。 */
+    public record ResetPasswordRequest(String identifierType, String identifier,
+                                       String verificationId, String code, String newPassword) {
+    }
+
+    /** 刷新令牌请求。 */
     public record RefreshRequest(String refreshToken) {
     }
 

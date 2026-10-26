@@ -48,6 +48,8 @@ import com.c53.modules.auth.model.AuthModels.UsedMarker;
 import com.c53.modules.auth.model.AuthModels.UserRow;
 import com.c53.modules.auth.redis.RefreshTokenStore;
 import com.c53.modules.auth.service.AuthService;
+import com.c53.modules.auth.service.AuthCleanupService;
+import com.c53.modules.auth.support.VerificationException;
 import com.c53.modules.auth.service.DeviceService;
 import com.c53.modules.auth.service.TokenService;
 import com.c53.modules.auth.service.VerificationService;
@@ -104,6 +106,7 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final AuthProperties properties;
     private final TransactionTemplate transactionTemplate;
+    private final AuthCleanupService cleanupService;
 
     public AuthServiceImpl(UserMapper userMapper, UserContactMapper userContactMapper,
                            AuthSessionMapper sessionMapper, AuthTokenFamilyMapper familyMapper,
@@ -114,7 +117,8 @@ public class AuthServiceImpl implements AuthService {
                            VerificationService verificationService, DeviceService deviceService,
                            RefreshTokenStore refreshTokenStore, TokenService tokenService,
                            HmacService hmacService, PasswordEncoder passwordEncoder,
-                           AuthProperties properties, TransactionTemplate transactionTemplate) {
+                           AuthProperties properties, TransactionTemplate transactionTemplate,
+                           AuthCleanupService cleanupService) {
         this.userMapper = userMapper;
         this.userContactMapper = userContactMapper;
         this.sessionMapper = sessionMapper;
@@ -131,6 +135,100 @@ public class AuthServiceImpl implements AuthService {
         this.passwordEncoder = passwordEncoder;
         this.properties = properties;
         this.transactionTemplate = transactionTemplate;
+        this.cleanupService = cleanupService;
+    }
+
+    /** 验证失败作为事务返回值提交，业务写入错误仍正常回滚。 */
+    private <T> T verificationTransaction(java.util.function.Supplier<T> action) {
+        Object result = transactionTemplate.execute(status -> {
+            try {
+                return action.get();
+            } catch (VerificationException exception) {
+                return exception;
+            }
+        });
+        if (result instanceof VerificationException exception) {
+            throw exception;
+        }
+        @SuppressWarnings("unchecked") T value = (T) result;
+        return value;
+    }
+
+    @Override
+    public void resetPassword(AuthDtos.ResetPasswordRequest request, RequestMeta meta) {
+        String channel = request == null ? null : AuthUtils.normalizeChannel(request.identifierType());
+        String target = request == null ? null : AuthUtils.normalizeTarget(channel, request.identifier());
+        AuthUtils.require(channel != null && target != null, "请输入正确的邮箱或手机号");
+        AuthUtils.require(AuthUtils.trimToNull(request.verificationId()) != null, "请先获取重置验证码");
+        AuthUtils.require(request.code() != null && request.code().matches("\\d{6}"), "请输入 6 位验证码");
+        AuthUtils.validatePassword(request.newPassword());
+        enforceRateLimit("reset-submit:ip", hmacService.hashAccount("ip:" + identityKey(meta.ip())),
+                Duration.ofMinutes(1), properties.getLimits().getResetSubmitPerIpPerMinute(), "重置请求过于频繁");
+        enforceRateLimit("reset-submit:target", hmacService.hashAccount(channel + ":" + target),
+                properties.getLimits().getResetSubmitWindow(),
+                properties.getLimits().getResetSubmitPerTargetPerWindow(), "重置请求过于频繁");
+        String hash = passwordEncoder.encode(request.newPassword());
+        try {
+            verificationTransaction(() -> {
+                String contactType = "sms".equals(channel) ? "phone" : "email";
+                UserRow candidate = verificationService.findUserForTarget(contactType, target).orElse(null);
+                UserEntity user = candidate == null ? null : userMapper.lockById(candidate.id());
+                Instant now = Instant.now();
+                var challenge = verificationService.verifyAndConsume(request.verificationId(), request.code(),
+                        "reset_password", channel, target, now);
+                if (user == null || user.getDeletedAt() != null || !"ACTIVE".equals(user.getStatus())
+                        || !user.getId().equals(challenge.userId())
+                        || (user.getPasswordChangedAt() != null
+                        && !challenge.createdAt().isAfter(user.getPasswordChangedAt()))) {
+                    throw new VerificationException(invalidResetCode());
+                }
+                userMapper.update(null, Wrappers.<UserEntity>lambdaUpdate()
+                        .eq(UserEntity::getId, user.getId())
+                        .set(UserEntity::getPasswordHash, hash)
+                        .set(UserEntity::getPasswordAlgorithm, "bcrypt")
+                        .set(UserEntity::getPasswordChangedAt, now)
+                        .set(UserEntity::getUpdatedAt, now));
+                List<AuthSessionEntity> sessions = sessionMapper.selectList(
+                        Wrappers.<AuthSessionEntity>lambdaQuery().eq(AuthSessionEntity::getUserId, user.getId())
+                                .last("FOR UPDATE"));
+                List<String> ids = sessions.stream().map(AuthSessionEntity::getId).toList();
+                if (!ids.isEmpty()) {
+                    List<AuthTokenFamilyEntity> families = familyMapper.selectList(
+                            Wrappers.<AuthTokenFamilyEntity>lambdaQuery().in(AuthTokenFamilyEntity::getSessionId, ids)
+                                    .last("FOR UPDATE"));
+                    // 也覆盖 switch_replaced，防止失败补偿恢复重置前的会话。
+                    sessionMapper.update(null, Wrappers.<AuthSessionEntity>lambdaUpdate()
+                            .in(AuthSessionEntity::getId, ids).set(AuthSessionEntity::getRevokedAt, now)
+                            .set(AuthSessionEntity::getRevokedReason, "password_changed")
+                            .set(AuthSessionEntity::getUpdatedAt, now));
+                    familyMapper.update(null, Wrappers.<AuthTokenFamilyEntity>lambdaUpdate()
+                            .in(AuthTokenFamilyEntity::getSessionId, ids)
+                            .set(AuthTokenFamilyEntity::getRevokedAt, now)
+                            .set(AuthTokenFamilyEntity::getRevokedReason, "password_changed"));
+                    for (AuthTokenFamilyEntity family : families) {
+                        cleanupService.enqueue(family.getId(), family.getExpiresAt(), "password_changed");
+                    }
+                }
+                deviceAccountMapper.update(null, Wrappers.<AuthDeviceAccountEntity>lambdaUpdate()
+                        .eq(AuthDeviceAccountEntity::getUserId, user.getId())
+                        .isNull(AuthDeviceAccountEntity::getRevokedAt)
+                        .set(AuthDeviceAccountEntity::getReauthRequired, true)
+                        .set(AuthDeviceAccountEntity::getReauthReason, "password_changed")
+                        .set(AuthDeviceAccountEntity::getUpdatedAt, now));
+                return null;
+            });
+        } catch (VerificationException exception) {
+            throw invalidResetCode();
+        }
+        try {
+            cleanupService.retryPending();
+        } catch (RuntimeException exception) {
+            log.warn("password reset committed; cleanup will retry asynchronously");
+        }
+    }
+
+    private static ApiException invalidResetCode() {
+        return ApiException.unauthorized("INVALID_VERIFICATION_CODE", "验证码无效或已过期，请重新获取");
     }
 
     /**
@@ -191,7 +289,7 @@ public class AuthServiceImpl implements AuthService {
         String userId = IdGenerator.newId("usr");
         String passwordHash = passwordEncoder.encode(request.password());
         // 6. 验证码消费和用户写入在同一事务中完成
-        UserRow user = transactionTemplate.execute(status -> {
+        UserRow user = verificationTransaction(() -> {
             verificationService.verifyAndConsume(challengeId, verificationCode, "register", channel, target, now);
             // 事务内再次检查，缩小与并发注册的竞争窗口
             if (usernameExists(username)) {
@@ -211,7 +309,6 @@ public class AuthServiceImpl implements AuthService {
         // 7. 注册成功后直接建立登录态
         DeviceResolution device = deviceService.resolveOrCreate(meta.deviceCookie(), meta.ip(), meta.userAgent());
         SessionTokens tokens = createSession(user, device.deviceId(), "register", true, meta);
-        upsertDeviceAccount(device.deviceId(), user.id(), now);
         updateLastLogin(user.id(), now);
         return new AuthResult<>(authSession(user, tokens), device.newCookieValue());
     }
@@ -284,8 +381,18 @@ public class AuthServiceImpl implements AuthService {
             Duration oldTokenTtl = remaining(Duration.between(now, Instant.ofEpochMilli(oldMeta.expiresAt())));
             Duration familyTtl = remaining(Duration.between(now, session.expiresAt()));
             try {
-                transactionTemplate.executeWithoutResult(status ->
-                        renewSessionAndFamily(session.id(), oldMeta.familyId(), now, newExpiry));
+                transactionTemplate.executeWithoutResult(status -> {
+                    UserEntity locked = userMapper.lockById(session.userId());
+                    AuthSessionEntity currentSession = sessionMapper.selectById(session.id());
+                    AuthTokenFamilyEntity currentFamily = familyMapper.selectById(oldMeta.familyId());
+                    if (locked == null || locked.getDeletedAt() != null || !"ACTIVE".equals(locked.getStatus())
+                            || currentSession == null || currentSession.getRevokedAt() != null
+                            || !currentSession.getExpiresAt().isAfter(Instant.now())
+                            || currentFamily == null || currentFamily.getRevokedAt() != null) {
+                        throw invalidRefreshToken();
+                    }
+                    renewSessionAndFamily(session.id(), oldMeta.familyId(), now, newExpiry);
+                });
             } catch (RuntimeException exception) {
                 boolean restored = refreshTokenStore.rollbackRotation(oldMeta, parsed.hash(),
                         newToken.hash(), oldTokenTtl, familyTtl);
@@ -530,7 +637,6 @@ public class AuthServiceImpl implements AuthService {
         DeviceResolution device = deviceService.resolveOrCreate(meta.deviceCookie(), meta.ip(), meta.userAgent());
         SessionTokens tokens = createSession(user, device.deviceId(), "password",
                 Boolean.TRUE.equals(request.remember()), meta);
-        upsertDeviceAccount(device.deviceId(), user.id(), now);
         updateLastLogin(user.id(), now);
         recordLoginAttempt(user.id(), accountType, account, device.deviceId(), tokens.sessionId(),
                 "password", true, null, meta, now);
@@ -564,11 +670,24 @@ public class AuthServiceImpl implements AuthService {
         if (challengeId == null) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_VERIFICATION_CODE", "请先获取登录验证码");
         }
-        transactionTemplate.executeWithoutResult(status ->
-                verificationService.verifyAndConsume(challengeId, code, "login", channel, target, now));
+        Optional<UserRow> optionalUser = verificationTransaction(() -> {
+            Optional<UserRow> candidate = findUserByAccount(target, contactType);
+            if (candidate.isPresent()) {
+                userMapper.lockById(candidate.get().id());
+            }
+            var challenge = verificationService.verifyAndConsume(challengeId, code, "login", channel, target, Instant.now());
+            Optional<UserRow> currentUser = findUserByAccount(target, contactType);
+            if (currentUser.isPresent()) {
+                UserEntity locked = userMapper.lockById(currentUser.get().id());
+                if (locked == null || (locked.getPasswordChangedAt() != null
+                        && !challenge.createdAt().isAfter(locked.getPasswordChangedAt()))) {
+                    throw new VerificationException(invalidResetCode());
+                }
+            }
+            return currentUser;
+        });
 
-        // 2. 验证码有效后再查用户
-        Optional<UserRow> optionalUser = findUserByAccount(target, contactType);
+        // 2. 验证码有效后再检查用户
         if (optionalUser.isEmpty()) {
             recordLoginAttempt(null, contactType, target, null, null,
                     "sms".equals(channel) ? "sms_code" : "email_code", false,
@@ -586,7 +705,6 @@ public class AuthServiceImpl implements AuthService {
         SessionTokens tokens = createSession(user, device.deviceId(),
                 "sms".equals(channel) ? "sms_code" : "email_code",
                 Boolean.TRUE.equals(request.remember()), meta);
-        upsertDeviceAccount(device.deviceId(), user.id(), now);
         updateLastLogin(user.id(), now);
         recordLoginAttempt(user.id(), contactType, target, device.deviceId(), tokens.sessionId(),
                 "sms".equals(channel) ? "sms_code" : "email_code", true, null, meta, now);
@@ -616,6 +734,23 @@ public class AuthServiceImpl implements AuthService {
         String familyId = IdGenerator.newId("fam");
         // 1. 同一设备同一用户只保留一个有效会话，旧会话稍后在 Redis 中清理
         List<FamilyRef> replaced = transactionTemplate.execute(status -> {
+            UserEntity locked = userMapper.lockById(user.id());
+            if (locked == null || locked.getDeletedAt() != null || !"ACTIVE".equals(locked.getStatus())
+                    || !java.util.Objects.equals(locked.getPasswordHash(), user.passwordHash())) {
+                throw invalidCredentials();
+            }
+            if ("switch".equals(loginMethod)) {
+                AuthDeviceAccountEntity saved = deviceAccountMapper.selectOne(
+                        Wrappers.<AuthDeviceAccountEntity>lambdaQuery()
+                                .eq(AuthDeviceAccountEntity::getDeviceId, deviceId)
+                                .eq(AuthDeviceAccountEntity::getUserId, user.id())
+                                .isNull(AuthDeviceAccountEntity::getRevokedAt).last("LIMIT 1 FOR UPDATE"));
+                if (saved == null || Boolean.TRUE.equals(saved.getReauthRequired())) {
+                    throw ApiException.unauthorized("REAUTH_REQUIRED", "请重新验证该账号");
+                }
+            } else {
+                upsertDeviceAccount(deviceId, user.id(), now);
+            }
             List<FamilyRef> refs = deviceId == null ? List.of()
                     : revokeActiveSessions(deviceId, user.id(), "switch_replaced", now);
             insertSession(sessionId, user.id(), deviceId, loginMethod, remember,
@@ -633,9 +768,12 @@ public class AuthServiceImpl implements AuthService {
         } catch (DependencyUnavailableException exception) {
             Instant failedAt = Instant.now();
             transactionTemplate.executeWithoutResult(status -> {
+                UserEntity locked = userMapper.lockById(user.id());
                 revokeSessionAndFamily(sessionId, "session_creation_failed",
                         "session_revoked", failedAt, false);
-                restoreSessionsAfterFailedLogin(replaced, failedAt);
+                if (locked != null && java.util.Objects.equals(locked.getPasswordHash(), user.passwordHash())) {
+                    restoreSessionsAfterFailedLogin(replaced, failedAt);
+                }
             });
             throw exception;
         }
@@ -878,19 +1016,15 @@ public class AuthServiceImpl implements AuthService {
      * @param now      当前时间
      */
     private void upsertDeviceAccount(String deviceId, String userId, Instant now) {
-        try {
-            AuthDeviceAccountEntity entity = new AuthDeviceAccountEntity();
-            entity.setId(IdGenerator.newId("acc"));
-            entity.setDeviceId(deviceId);
-            entity.setUserId(userId);
-            entity.setAuthorizedAt(now);
-            entity.setLastUsedAt(now);
-            entity.setCreatedAt(now);
-            entity.setUpdatedAt(now);
-            deviceAccountMapper.upsert(entity);
-        } catch (DataAccessException exception) {
-            log.warn("failed to update saved device account deviceId={} userId={}", deviceId, userId);
-        }
+        AuthDeviceAccountEntity entity = new AuthDeviceAccountEntity();
+        entity.setId(IdGenerator.newId("acc"));
+        entity.setDeviceId(deviceId);
+        entity.setUserId(userId);
+        entity.setAuthorizedAt(now);
+        entity.setLastUsedAt(now);
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        deviceAccountMapper.upsert(entity);
     }
 
     /**
