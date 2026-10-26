@@ -84,6 +84,9 @@ public class MediaServiceImpl implements MediaService {
         this.clock = clock;
     }
 
+    /**
+     * 下发给前端的限制参数，前端据此决定上传入口与提示文案。
+     */
     @Override
     public MediaConfigResponse config() {
         return new MediaConfigResponse(
@@ -99,8 +102,12 @@ public class MediaServiceImpl implements MediaService {
                 properties.getPartSize().toBytes());
     }
 
+    /**
+     * 服务端上传：图片一律走这里；视频只接受不超过直传阈值的部分。
+     */
     @Override
     public MediaView uploadServer(AuthPrincipal principal, MultipartFile file, String mediaType) {
+        // 会话可能已被踢下线或账号被冻结，写操作前统一校验
         guard.requireActive(principal.userId(), principal.sessionId());
         ObjectStorage storage = requireStorage();
         String type = MediaValidator.normalizeType(mediaType);
@@ -119,11 +126,13 @@ public class MediaServiceImpl implements MediaService {
             if (size > properties.getVideo().getMaxBytes()) {
                 throw tooLarge("视频不能超过 " + megabyte(properties.getVideo().getMaxBytes()) + "MB");
             }
+            // 大视频走 STS 直传，避免整个文件进入应用内存与网关超时
             if (size > properties.getServerUploadMaxBytes()) {
                 throw ApiException.badRequest("DIRECT_UPLOAD_REQUIRED", "大于 10MB 的视频请使用直传通道");
             }
         }
 
+        // 配额先占后用：后续任何一步失败都要回滚，避免失败请求消耗额度
         enforce("post:upload:" + principal.userId() + ":h",
                 properties.getLimits().getUploadPerHour(), Duration.ofHours(1), "上传过于频繁，请稍后再试");
         enforceConcurrency(principal.userId());
@@ -139,6 +148,7 @@ public class MediaServiceImpl implements MediaService {
             rateLimiter.decrement(quotaKey);
             throw ApiException.badRequest("VALIDATION_ERROR", "读取上传文件失败");
         }
+        // 按魔数判断真实类型，不信任客户端声明的 Content-Type
         MediaValidator.DetectedMedia detected;
         try {
             detected = MediaValidator.detect(raw);
@@ -161,6 +171,7 @@ public class MediaServiceImpl implements MediaService {
         asset.setSortOrder(0);
         asset.setStatus(MediaAssetRepository.INIT);
         asset.setExpiresAt(now.plus(properties.getTempTtl()));
+        // 先落库占位再上传：即使进程中断，清理任务也能按 expiresAt 回收残留对象
         repository.insert(asset);
         repository.markUploading(asset.getId());
 
@@ -172,12 +183,14 @@ public class MediaServiceImpl implements MediaService {
             Integer height = null;
             Long durationMs = null;
             if ("IMAGE".equals(type)) {
+                // 图片强制重编码：压缩体积、剥离 EXIF，同时消除图片马等构造型攻击载荷
                 ImageProcessor.ProcessedImage processed = imageProcessor.process(raw, detected.mime());
                 content = processed.bytes();
                 mime = processed.mime();
                 width = processed.width();
                 height = processed.height();
             } else {
+                // 视频不解码，只解析 MP4 头，读不到时长即视为不可信文件
                 Mp4Probe.ProbeResult probe = Mp4Probe.probe(raw);
                 validateVideo(probe);
                 content = raw;
@@ -194,6 +207,7 @@ public class MediaServiceImpl implements MediaService {
                     .orElseThrow(() -> new IllegalStateException("media disappeared after upload"));
             return toView(saved);
         } catch (RuntimeException exception) {
+            // 上传失败要把已写入的对象和已占用的配额一起回滚
             if (finalKey != null) {
                 deleteQuietly(storage, finalKey);
             }
@@ -203,6 +217,9 @@ public class MediaServiceImpl implements MediaService {
         }
     }
 
+    /**
+     * 为大视频签发 STS 临时凭证，凭证的会话策略只允许写本次 uploadId 的临时前缀。
+     */
     @Override
     public TicketResponse issueTicket(AuthPrincipal principal, UploadTicketRequest request) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -215,6 +232,7 @@ public class MediaServiceImpl implements MediaService {
         if (declaredSize == null || declaredSize <= 0) {
             throw ApiException.badRequest("VALIDATION_ERROR", "sizeBytes 不合法");
         }
+        // 与上传通道阈值互补：小文件走服务端，避免为几 MB 文件额外签发凭证
         if (declaredSize <= properties.getServerUploadMaxBytes()) {
             throw ApiException.badRequest("SERVER_UPLOAD_REQUIRED", "小文件请使用服务端上传");
         }
@@ -236,6 +254,7 @@ public class MediaServiceImpl implements MediaService {
         Instant now = clock.instant();
         String mediaId = IdGenerator.newId("med");
         String uploadId = IdGenerator.newId("upl");
+        // 直传先落临时目录，确认通过后才复制到正式目录，未确认的对象由生命周期规则清理
         String tempKey = ObjectKeys.tempKey(properties.getEnv(), principal.userId(), uploadId, "video/mp4");
 
         MediaAssetEntity asset = new MediaAssetEntity();
@@ -253,6 +272,7 @@ public class MediaServiceImpl implements MediaService {
         asset.setExpiresAt(now.plus(properties.getTempTtl()));
         repository.insert(asset);
 
+        // 记录先落库再签发凭证：凭证里的前缀必须对应一条可追踪的媒体记录
         StsCredentials credentials;
         try {
             credentials = issuer.issue(principal.userId(), uploadId);
@@ -278,11 +298,15 @@ public class MediaServiceImpl implements MediaService {
                 MediaAssetRepository.UPLOADING);
     }
 
+    /**
+     * 直传确认：以 OSS 上真实存在的对象为准复核大小与 ETag，通过后转到正式目录。
+     */
     @Override
     public MediaView confirm(AuthPrincipal principal, String mediaId, ConfirmRequest request) {
         guard.requireActive(principal.userId(), principal.sessionId());
         ObjectStorage storage = requireStorage();
         MediaAssetEntity asset = requireOwnedMedia(principal.userId(), mediaId);
+        // 前端重试或重复回调时直接返回，保证确认接口幂等
         if (MediaAssetRepository.READY.equals(asset.getStatus())
                 || MediaAssetRepository.BOUND.equals(asset.getStatus())) {
             return toView(asset);
@@ -302,6 +326,7 @@ public class MediaServiceImpl implements MediaService {
 
         String finalKey = null;
         try {
+            // 不信任前端上报的结果，直接读取对象元数据核对
             StoredObject stored = storage.head(tempKey);
             if (stored == null || stored.sizeBytes() <= 0) {
                 throw confirmFailed("未找到上传的文件");
@@ -321,6 +346,7 @@ public class MediaServiceImpl implements MediaService {
             Mp4Probe.ProbeResult probe = Mp4Probe.probe(storage, tempKey, stored.sizeBytes());
             validateVideo(probe);
 
+            // 复制而非移动：复制失败时临时对象仍在，前端可重试确认
             finalKey = ObjectKeys.finalKey(properties.getEnv(), "VIDEO", now,
                     principal.userId(), mediaId, "video/mp4");
             storage.copy(tempKey, finalKey, "video/mp4");
@@ -353,6 +379,9 @@ public class MediaServiceImpl implements MediaService {
         return toView(requireOwnedMedia(principal.userId(), mediaId));
     }
 
+    /**
+     * 删除媒体只做软删，OSS 对象由清理任务在保留期后统一回收。
+     */
     @Override
     public void delete(AuthPrincipal principal, String mediaId) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -360,6 +389,7 @@ public class MediaServiceImpl implements MediaService {
         if (MediaAssetRepository.DELETED.equals(asset.getStatus())) {
             return;
         }
+        // 已绑定动态的媒体必须先解绑，避免动态正文里出现失效附件
         if (MediaAssetRepository.BOUND.equals(asset.getStatus())) {
             throw ApiException.conflict("MEDIA_BOUND", "媒体已绑定动态，请先在编辑中移除");
         }
@@ -380,6 +410,11 @@ public class MediaServiceImpl implements MediaService {
         return result;
     }
 
+    /**
+     * 绑定前校验：媒体归属、状态可复用、图片视频不混排、数量不超限。
+     *
+     * @return 本条动态的媒体类型；没有媒体时返回 {@code null}
+     */
     @Override
     public String prepareBinding(String ownerId, List<String> mediaIds, String currentPostId) {
         List<String> ids = dedupe(mediaIds);
@@ -394,6 +429,7 @@ public class MediaServiceImpl implements MediaService {
         int images = 0;
         int videos = 0;
         for (MediaAssetEntity asset : assets) {
+            // 已属于当前动态的媒体允许在编辑时重复提交，其余只接受未绑定的 READY 状态
             boolean reusable = MediaAssetRepository.READY.equals(asset.getStatus())
                     || (MediaAssetRepository.BOUND.equals(asset.getStatus())
                     && currentPostId != null && currentPostId.equals(asset.getPostId()));
@@ -425,6 +461,7 @@ public class MediaServiceImpl implements MediaService {
         List<String> ids = dedupe(mediaIds);
         for (int index = 0; index < ids.size(); index++) {
             String id = ids.get(index);
+            // 已绑定的媒体只需更新排序，未绑定的才执行真正的绑定
             int updated = repository.updateSortOrder(id, ownerId, postId, index);
             if (updated == 0) {
                 updated = repository.bind(id, ownerId, postId, index);
@@ -528,16 +565,26 @@ public class MediaServiceImpl implements MediaService {
         }
     }
 
+    /**
+     * 配额按 UTC 自然日计数，key 里带日期，跨天自动使用新 key。
+     */
     private String quotaKey(String kind, String userId) {
         return "post:quota:" + kind + ":" + userId + ":" + LocalDate.now(clock).format(DAY);
     }
 
+    /**
+     * 配额 key 的过期时间对齐到次日的 UTC 零点，避免无效计数长期占用 Redis。
+     */
     private Duration secondsUntilTomorrow() {
         Instant now = clock.instant();
         Instant tomorrow = LocalDate.now(clock).plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
         return Duration.ofSeconds(Math.max(60, tomorrow.getEpochSecond() - now.getEpochSecond()));
     }
 
+    /**
+     * 私有桶不直接暴露对象，统一换成带签名的临时 URL。
+     * 签名失败时只降级为无地址，不影响其他字段展示。
+     */
     private MediaView toView(MediaAssetEntity asset) {
         String url = null;
         if (asset.getObjectKey() != null) {

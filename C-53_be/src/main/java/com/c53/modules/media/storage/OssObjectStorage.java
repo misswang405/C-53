@@ -18,6 +18,9 @@ import java.util.Date;
 
 /**
  * {@link ObjectStorage} 的阿里云 OSS 实现。
+ *
+ * <p>所有异常都包装成 {@link DependencyUnavailableException}，由上层统一转成 503，
+ * 避免把 OSS 的原始错误码暴露给客户端。</p>
  */
 @Component
 @ConditionalOnExpression("'${media.bucket:}' != ''")
@@ -43,6 +46,9 @@ public class OssObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * 流式写入。长度必须由调用方给出，否则 OSS SDK 会把整个流读进内存再上传。
+     */
     @Override
     public void put(String objectKey, InputStream input, long length, String contentType) {
         ObjectMetadata metadata = new ObjectMetadata();
@@ -55,6 +61,10 @@ public class OssObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * 读取对象元数据。对象不存在时返回 {@code null} 而不是抛异常，
+     * 让「前端还没传完」这种正常分支不必走异常流程。
+     */
     @Override
     public StoredObject head(String objectKey) {
         try {
@@ -72,6 +82,9 @@ public class OssObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * 按字节区间读取，用于解析 MP4 头部而不下载整个视频。
+     */
     @Override
     public byte[] readRange(String objectKey, long start, long end) {
         GetObjectRequest request = new GetObjectRequest(bucket, objectKey);
@@ -84,6 +97,9 @@ public class OssObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * 服务端复制，用于直传视频从临时目录转到正式目录，数据不经过应用。
+     */
     @Override
     public void copy(String sourceKey, String targetKey, String contentType) {
         ObjectMetadata metadata = new ObjectMetadata();
@@ -106,6 +122,9 @@ public class OssObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * 生成带签名的临时访问地址。桶是私有的，前端只能用这种方式取图/取视频。
+     */
     @Override
     public String signedUrl(String objectKey, Duration ttl) {
         Date expiration = new Date(System.currentTimeMillis() + ttl.toMillis());

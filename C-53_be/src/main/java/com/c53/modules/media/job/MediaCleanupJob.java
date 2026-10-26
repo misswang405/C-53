@@ -48,8 +48,10 @@ public class MediaCleanupJob {
 
     /**
      * 回收过期上传与已删除媒体。
+     *
+     * <p>三步互不影响：单步异常只记录日志，下一轮继续，不会阻塞其他清理。</p>
      */
-    @Scheduled(fixedDelayString = "${post.cleanup.scan-interval:10m}")
+    @Scheduled(fixedDelayString = "${post.cleanup.scan-interval:PT10M}")
     public void cleanup() {
         Instant now = clock.instant();
         expireUploads(now);
@@ -57,6 +59,9 @@ public class MediaCleanupJob {
         purgeDeleted(now);
     }
 
+    /**
+     * 超过票据有效期仍未确认的上传：删临时对象并置为 FAILED。
+     */
     private void expireUploads(Instant now) {
         List<MediaAssetEntity> expired = repository.findExpiredUploads(now, BATCH_SIZE);
         for (MediaAssetEntity asset : expired) {
@@ -78,6 +83,9 @@ public class MediaCleanupJob {
         }
     }
 
+    /**
+     * 软删除超过保留期的媒体：先删对象再删记录，顺序反了会留下无法定位的孤儿文件。
+     */
     private void purgeDeleted(Instant now) {
         Instant before = now.minus(postProperties.getCleanup().getDeleteRetention());
         List<MediaAssetEntity> purgeable = repository.findPurgeable(before, BATCH_SIZE);
@@ -88,6 +96,9 @@ public class MediaCleanupJob {
         }
     }
 
+    /**
+     * 删除对象失败不向外抛异常：记录保留，下一轮重试。
+     */
     private void deleteObject(String key) {
         if (key == null) {
             return;

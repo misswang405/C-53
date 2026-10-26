@@ -73,6 +73,7 @@ public class MediaProperties {
     /** 限流与配额。 */
     private Limits limits = new Limits();
 
+    /** 图片校验、压缩与数量限制配置。 */
     @Data
     public static class Image {
         /** 单张图片最大字节数。 */
@@ -87,6 +88,7 @@ public class MediaProperties {
         private double quality = 0.85;
     }
 
+    /** 视频大小、时长、画面和数量限制配置。 */
     @Data
     public static class Video {
         /** 单视频最大字节数。 */
@@ -103,6 +105,7 @@ public class MediaProperties {
         private int maxCount = 1;
     }
 
+    /** 媒体上传、读取和每日配额配置。 */
     @Data
     public static class Limits {
         /** 凭证申请：每分钟。 */

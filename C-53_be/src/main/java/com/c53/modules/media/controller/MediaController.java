@@ -40,6 +40,8 @@ public class MediaController {
     /**
      * 上传能力配置，公开。
      *
+     * <p>无需登录：未登录用户也能拿到限制参数用于前端预校验。</p>
+     *
      * @return 配置
      */
     @GetMapping("/config")
@@ -48,7 +50,7 @@ public class MediaController {
     }
 
     /**
-     * 服务端上传小文件。
+     * 服务端上传小文件，成功返回 201 与可直接使用的媒体视图。
      *
      * @param principal 当前用户
      * @param file      文件
@@ -80,7 +82,7 @@ public class MediaController {
     }
 
     /**
-     * 直传完成确认。
+     * 直传完成确认，可重复调用，重复确认返回同样的结果。
      *
      * @param principal 当前用户
      * @param id        媒体 ID

@@ -20,6 +20,7 @@ import java.util.Optional;
 @Repository
 public class MediaAssetRepository {
 
+    // 媒体状态流转：INIT → UPLOADING → READY → BOUND；失败进 FAILED，删除进 DELETED
     public static final String INIT = "INIT";
     public static final String UPLOADING = "UPLOADING";
     public static final String READY = "READY";
@@ -72,6 +73,9 @@ public class MediaAssetRepository {
                 .last("LIMIT " + limit));
     }
 
+    /**
+     * 软删除且已过保留期的媒体，由清理任务删除 OSS 对象后移除记录。
+     */
     public List<MediaAssetEntity> findPurgeable(Instant before, int limit) {
         return mapper.selectList(Wrappers.<MediaAssetEntity>lambdaQuery()
                 .eq(MediaAssetEntity::getStatus, DELETED)
@@ -92,6 +96,9 @@ public class MediaAssetRepository {
                 .last("LIMIT " + limit));
     }
 
+    /**
+     * 统计进行中的上传，用于并发上传数限制。
+     */
     public long countInFlight(String ownerId) {
         Long count = mapper.selectCount(Wrappers.<MediaAssetEntity>lambdaQuery()
                 .eq(MediaAssetEntity::getOwnerId, ownerId)
@@ -110,6 +117,9 @@ public class MediaAssetRepository {
                 .eq(MediaAssetEntity::getStatus, INIT));
     }
 
+    /**
+     * 转为可用状态。同时清空临时 key 与过期时间，表示这条记录不再需要被清理。
+     */
     public int markReady(String id, String objectKey, long sizeBytes, Integer width,
                          Integer height, Long durationMs, String checksum) {
         LambdaUpdateWrapper<MediaAssetEntity> wrapper = Wrappers.<MediaAssetEntity>lambdaUpdate()
@@ -140,6 +150,9 @@ public class MediaAssetRepository {
                 .in(MediaAssetEntity::getStatus, INIT, UPLOADING));
     }
 
+    /**
+     * 软删除，已删除的记录重复调用不会刷新删除时间。
+     */
     public int markDeleted(String id, Instant deletedAt) {
         return mapper.update(null, Wrappers.<MediaAssetEntity>lambdaUpdate()
                 .set(MediaAssetEntity::getStatus, DELETED)
@@ -181,6 +194,9 @@ public class MediaAssetRepository {
                 .eq(MediaAssetEntity::getStatus, BOUND));
     }
 
+    /**
+     * 解绑后回到 READY，可再次用于其他动态；对象本身保留。
+     */
     public int unbind(String id, String ownerId) {
         return mapper.update(null, Wrappers.<MediaAssetEntity>lambdaUpdate()
                 .set(MediaAssetEntity::getPostId, null)
@@ -191,6 +207,9 @@ public class MediaAssetRepository {
                 .eq(MediaAssetEntity::getStatus, BOUND));
     }
 
+    /**
+     * 物理删除记录。调用前必须已删除对应的 OSS 对象，否则会留下无法追踪的孤儿文件。
+     */
     public void hardDelete(String id) {
         mapper.deleteById(id);
     }
