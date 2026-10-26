@@ -1,8 +1,10 @@
 <script setup>
+// 媒体上传组件：处理文件校验、上传进度和本地预览。
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { api } from '../../services/api'
 import { uploadMedia } from '../../services/upload'
 
+// modelValue 保存已上传媒体；数量上限和禁用状态由调用方控制。
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
   maxImages: { type: Number, default: 9 },
@@ -10,11 +12,13 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 const emit = defineEmits(['update:modelValue', 'update:uploading', 'error'])
 
 const input = ref(null)
 const uploading = ref(false)
 const progress = ref(0)
+// 本地预览用的 blob 地址，组件卸载时必须手动释放，否则会一直占用内存
 const objectUrls = []
 
 const imageCount = computed(() => props.modelValue.filter((item) => item.mediaType === 'IMAGE').length)
@@ -28,11 +32,13 @@ function pick() {
 
 async function handleFiles(event) {
   const files = Array.from(event.target.files || [])
+  // 清空 input，保证再次选择同一个文件也能触发 change
   event.target.value = ''
   if (!files.length) return
   uploading.value = true
   emit('update:uploading', true)
   try {
+    // 串行上传：避免多个大视频并发占满带宽，也让进度条保持线性
     for (const file of files) {
       const isVideo = file.type.startsWith('video/')
       if (isVideo && videoCount.value >= props.maxVideos) {
@@ -71,6 +77,7 @@ function remove(item) {
   if (index >= 0) {
     emit('update:modelValue', props.modelValue.filter((_, position) => position !== index))
   }
+  // 删除失败不阻断交互，残留对象由后端孤儿清理任务回收
   if (item.mediaId) api.deleteMedia(item.mediaId).catch(() => {})
 }
 

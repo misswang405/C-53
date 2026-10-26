@@ -48,13 +48,16 @@ public class DraftCleanupJob {
     /**
      * 清理过期草稿与已删除数据。
      */
-    @Scheduled(fixedDelayString = "${post.cleanup.scan-interval:10m}")
+    @Scheduled(fixedDelayString = "${post.cleanup.scan-interval:PT10M}")
     public void cleanup() {
         Instant now = clock.instant();
         removeStaleDrafts(now);
         purgeDeletedPosts(now);
     }
 
+    /**
+     * 清理超过保留期的草稿，同时解除其媒体绑定，避免媒体资源被草稿长期占用。
+     */
     private void removeStaleDrafts(Instant now) {
         Instant before = now.minus(properties.getDraft().getRetention());
         List<PostEntity> drafts = postRepository.findStaleDrafts(before, BATCH_SIZE);
@@ -72,6 +75,9 @@ public class DraftCleanupJob {
         }
     }
 
+    /**
+     * 物理删除已过保留期的软删动态；单条失败只记日志，不影响同批其他记录。
+     */
     private void purgeDeletedPosts(Instant now) {
         Instant before = now.minus(properties.getCleanup().getDeleteRetention());
         List<PostEntity> posts = postRepository.findPurgeable(before, BATCH_SIZE);

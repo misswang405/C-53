@@ -41,6 +41,8 @@ public class PostController {
     /**
      * 创建草稿、立即发布或定时发布。
      *
+     * <p>携带 {@code clientRequestId} 时接口幂等：重复提交返回首次结果并给出 200。
+     *
      * @param principal 当前用户
      * @param request   创建参数
      * @return 动态视图

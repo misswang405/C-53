@@ -50,8 +50,11 @@ public class ScheduledPublishJob {
 
     /**
      * 扫描并发布到期动态。
+     *
+     * <p>每分钟一轮：先抢锁保证多实例只有一个执行，抢不到直接跳过；
+     * 单条发布失败不影响同批其他动态，下一轮会重新扫到。</p>
      */
-    @Scheduled(fixedDelayString = "${post.schedule.scan-interval:60s}")
+    @Scheduled(fixedDelayString = "${post.schedule.scan-interval:PT60S}")
     public void publishDuePosts() {
         Instant now = clock.instant();
         if (!acquireLock(now)) {
@@ -60,6 +63,7 @@ public class ScheduledPublishJob {
         List<PostEntity> due = postRepository.findScheduledDue(now, properties.getSchedule().getBatchSize());
         for (PostEntity post : due) {
             try {
+                // 以计划时间为准，扫描延迟不会让动态的发布时间漂移
                 Instant publishedAt = post.getScheduledAt() == null ? now : post.getScheduledAt();
                 transactionTemplate.executeWithoutResult(transaction -> {
                     int updated = postRepository.publishScheduled(post.getId(), publishedAt);

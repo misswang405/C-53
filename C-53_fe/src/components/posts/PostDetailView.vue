@@ -1,4 +1,6 @@
 <script setup>
+// 动态详情页面：展示正文、媒体、评论及作者操作入口。
+// 接收动态详情及编辑状态；互动和发布操作向父组件发出事件。
 defineProps({
   post: { type: Object, required: true },
   responseCount: { type: Function, required: true },
@@ -6,6 +8,7 @@ defineProps({
   nestedReply: { type: String, default: '' },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits([
   'back',
   'open-topic',
@@ -35,6 +38,7 @@ defineEmits([
         </div>
       </header>
 
+      <!-- 图片与视频混排时按顺序展示；单个视频单独占满一行 -->
       <div v-if="post.media?.length" class="detail-media" :class="{ 'single-video': post.media[0].mediaType === 'VIDEO' }">
         <template v-for="item in post.media" :key="item.mediaId">
           <img v-if="item.mediaType === 'IMAGE'" :src="item.url" alt="" loading="lazy" />
@@ -43,6 +47,7 @@ defineEmits([
       </div>
 
       <div class="detail-body">
+        <!-- 纯文本按空行分段；没有分段信息时退回整段展示 -->
         <p v-for="paragraph in post.detail?.length ? post.detail : [post.body]" :key="paragraph">{{ paragraph }}</p>
         <aside class="detail-note"><span></span><div><small>创作进展</small><strong>{{ post.note }}</strong></div></aside>
       </div>

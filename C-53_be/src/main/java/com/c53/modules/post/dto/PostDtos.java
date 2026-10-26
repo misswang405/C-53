@@ -56,6 +56,8 @@ public final class PostDtos {
 
     /**
      * 动态完整视图。
+     *
+     * <p>互动字段由互动模块批量查询后填充，游客的用户关系字段固定为 false。</p>
      */
     public record PostResponse(
             String id,
@@ -71,7 +73,11 @@ public final class PostDtos {
             Instant editedAt,
             Instant createdAt,
             int version,
-            boolean ownedByMe) {
+            boolean ownedByMe,
+            long likeCount,
+            boolean likedByMe,
+            boolean bookmarkedByMe,
+            long commentCount) {
     }
 
     /**

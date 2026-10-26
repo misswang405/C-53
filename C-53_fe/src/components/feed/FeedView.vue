@@ -1,7 +1,9 @@
 <script setup>
+// 信息流页面：展示动态、收藏列表及草稿编辑入口。
 import { computed } from 'vue'
 import MediaUploader from './MediaUploader.vue'
 
+// 动态列表、草稿和上传状态由父组件统一提供，避免页面切换时出现多份状态。
 const props = defineProps({
   activeView: { type: String, required: true },
   isAuthenticated: { type: Boolean, required: true },
@@ -21,6 +23,7 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits([
   'update:draft', 'update:composerOpen', 'update:draftTopic', 'update:feedFilter',
   'update:mediaItems', 'update:uploading', 'login', 'publish', 'schedule', 'cancel-draft', 'media-error',
@@ -28,13 +31,26 @@ defineEmits([
   'add-comment', 'follow',
 ])
 
+// 按码点计数，让 emoji 与中文和用户直觉一致（与后端 600 字限制口径相同）
 const draftLength = computed(() => Array.from(props.draft || '').length)
+// 上传和发布期间都禁止提交，避免媒体还没就绪就发出动态
 const canSubmit = computed(() => Boolean(props.draft.trim()) && !props.busy && !props.uploading)
 const draftStateText = computed(() => ({
   saving: '保存中…',
   saved: '草稿已保存',
   error: '草稿保存失败',
 }[props.draftState] || ''))
+// 关注流与公开流使用不同空态：未登录先提示登录，已登录提示去关注
+const emptyTitle = computed(() => {
+  if (props.feedFilter !== '正在关注') return '这里暂时还是空的'
+  return props.isAuthenticated ? '还没有关注动态' : '登录后查看关注动态'
+})
+const emptyHint = computed(() => {
+  if (props.feedFilter !== '正在关注') return '还没有可展示的公开文章。'
+  return props.isAuthenticated
+    ? '关注感兴趣的创作者，他们的更新会出现在这里。'
+    : '登录后即可看到你关注的创作者的最新动态。'
+})
 </script>
 
 <template>
@@ -114,11 +130,11 @@ const draftStateText = computed(() => ({
         </article>
       </TransitionGroup>
       <div v-if="loading" class="empty-state"><span>◌</span><h2>正在加载内容</h2><p>请稍候。</p></div>
-      <div v-else-if="!posts.length" class="empty-state"><span>◇</span><h2>{{ error ? '内容暂时无法加载' : '这里暂时还是空的' }}</h2><p>{{ error || '还没有可展示的公开文章。' }}</p></div>
+      <div v-else-if="!posts.length" class="empty-state"><span>◇</span><h2>{{ error ? '内容暂时无法加载' : emptyTitle }}</h2><p>{{ error || emptyHint }}</p></div>
     </section>
 
     <aside class="right-column">
-      <section class="side-card">
+      <section v-if="people.length" class="side-card">
         <div class="card-heading"><h2>值得认识的人</h2><button type="button" @click="$emit('navigate', 'discover')">查看全部</button></div>
         <article v-for="person in people" :key="person.id" class="person-row"><span class="avatar" :class="person.tone">{{ person.initials }}</span><div><strong>{{ person.name }}</strong><span>{{ person.field }}</span></div><button type="button" :class="{ followed: person.followed }" @click="$emit('follow', person)">{{ person.followed ? '已关注' : '关注' }}</button></article>
       </section>

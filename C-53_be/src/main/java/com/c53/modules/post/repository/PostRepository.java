@@ -1,6 +1,7 @@
 package com.c53.modules.post.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.c53.modules.post.entity.PostEntity;
@@ -8,8 +9,11 @@ import com.c53.modules.post.mapper.PostMapper;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * 动态数据访问。
@@ -28,6 +32,41 @@ public class PostRepository {
 
     public Optional<PostEntity> findById(String id) {
         return Optional.ofNullable(mapper.selectById(id));
+    }
+
+    public int incrementLike(String id) {
+        return mapper.update(null, Wrappers.<PostEntity>lambdaUpdate()
+                .setSql("like_count = like_count + 1")
+                .eq(PostEntity::getId, id)
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt));
+    }
+
+    public int decrementLike(String id) {
+        return mapper.update(null, Wrappers.<PostEntity>lambdaUpdate()
+                .setSql("like_count = GREATEST(0, like_count - 1)")
+                .eq(PostEntity::getId, id)
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt));
+    }
+
+    public int incrementComment(String id) {
+        return mapper.update(null, Wrappers.<PostEntity>lambdaUpdate()
+                .setSql("comment_count = comment_count + 1")
+                .eq(PostEntity::getId, id)
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt));
+    }
+
+    public List<PostEntity> findPublishedByIds(Collection<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return mapper.selectList(Wrappers.<PostEntity>lambdaQuery()
+                .in(PostEntity::getId, ids)
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt)
+                .isNotNull(PostEntity::getPublishedAt));
     }
 
     public Optional<PostEntity> findByAuthorAndRequestId(String authorId, String clientRequestId) {
@@ -183,6 +222,109 @@ public class PostRepository {
      * @param cursorId   游标 ID
      * @param limit      最大条数
      */
+    /**
+     * 最新流：按发布时间倒序，使用发布时间的复合游标。
+     *
+     * @param cursorTime 游标时间
+     * @param cursorId   游标 ID
+     * @param limit      最大条数
+     * @return 公开动态
+     */
+    public List<PostEntity> findLatest(Instant cursorTime, String cursorId, int limit) {
+        LambdaQueryWrapper<PostEntity> wrapper = Wrappers.<PostEntity>lambdaQuery()
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt)
+                .isNotNull(PostEntity::getPublishedAt);
+        appendPublishedCursor(wrapper, cursorTime, cursorId);
+        return mapper.selectList(wrapper
+                .orderByDesc(PostEntity::getPublishedAt)
+                .orderByDesc(PostEntity::getId)
+                .last("LIMIT " + limit));
+    }
+
+    /**
+     * 关注流：限定作者集合，按发布时间倒序。
+     *
+     * @param authorIds       作者 ID 集合
+     * @param excludeAuthorId 需要排除的作者，通常为当前用户
+     * @param cursorTime      游标时间
+     * @param cursorId        游标 ID
+     * @param limit           最大条数
+     * @return 公开动态
+     */
+    public List<PostEntity> findByAuthors(Collection<String> authorIds, String excludeAuthorId,
+                                          Instant cursorTime, String cursorId, int limit) {
+        if (authorIds == null || authorIds.isEmpty()) {
+            return List.of();
+        }
+        LambdaQueryWrapper<PostEntity> wrapper = Wrappers.<PostEntity>lambdaQuery()
+                .in(PostEntity::getAuthorId, authorIds)
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt)
+                .isNotNull(PostEntity::getPublishedAt);
+        if (excludeAuthorId != null) {
+            wrapper.ne(PostEntity::getAuthorId, excludeAuthorId);
+        }
+        appendPublishedCursor(wrapper, cursorTime, cursorId);
+        return mapper.selectList(wrapper
+                .orderByDesc(PostEntity::getPublishedAt)
+                .orderByDesc(PostEntity::getId)
+                .last("LIMIT " + limit));
+    }
+
+    /**
+     * 推荐候选：时间窗口内的公开动态，按发布时间倒序取上限。
+     *
+     * @param since 起始时间
+     * @param limit 最大条数
+     * @return 候选动态
+     */
+    public List<PostEntity> findRecommendedCandidates(Instant since, int limit) {
+        return mapper.selectList(Wrappers.<PostEntity>lambdaQuery()
+                .eq(PostEntity::getStatus, PostStatus.PUBLISHED)
+                .isNull(PostEntity::getDeletedAt)
+                .isNotNull(PostEntity::getPublishedAt)
+                .ge(PostEntity::getPublishedAt, since)
+                .orderByDesc(PostEntity::getPublishedAt)
+                .last("LIMIT " + limit));
+    }
+
+    /**
+     * 统计作者在指定时间之后发布的动态数。
+     *
+     * @param authorIds 作者 ID 集合
+     * @param since     起始时间
+     * @return 作者 ID 到发布数的映射
+     */
+    public Map<String, Long> countPublishedByAuthorsSince(Collection<String> authorIds, Instant since) {
+        if (authorIds == null || authorIds.isEmpty()) {
+            return Map.of();
+        }
+        QueryWrapper<PostEntity> wrapper = new QueryWrapper<>();
+        wrapper.select("author_id", "COUNT(*) AS cnt")
+                .in("author_id", authorIds)
+                .eq("status", PostStatus.PUBLISHED)
+                .isNull("deleted_at")
+                .ge("published_at", since)
+                .groupBy("author_id");
+        return mapper.selectMaps(wrapper).stream().collect(Collectors.toMap(
+                row -> String.valueOf(row.get("author_id")),
+                row -> row.get("cnt") instanceof Number number ? number.longValue() : 0L));
+    }
+
+    /**
+     * 追加发布时间复合游标条件，游标字段必须与排序字段一致。
+     */
+    private void appendPublishedCursor(LambdaQueryWrapper<PostEntity> wrapper,
+                                       Instant cursorTime, String cursorId) {
+        if (cursorTime == null) {
+            return;
+        }
+        wrapper.and(w -> w.lt(PostEntity::getPublishedAt, cursorTime)
+                .or(n -> n.eq(PostEntity::getPublishedAt, cursorTime)
+                        .lt(PostEntity::getId, cursorId)));
+    }
+
     public List<PostEntity> findMine(String authorId, String status, Instant cursorTime,
                                      String cursorId, int limit) {
         boolean published = PostStatus.PUBLISHED.equals(status);

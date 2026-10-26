@@ -37,6 +37,12 @@ public class PostEntity {
     /** 媒体类型：IMAGE/VIDEO，无媒体为 null。 */
     private String mediaType;
 
+    /** 点赞数。 */
+    private Long likeCount;
+
+    /** 评论与回复总数。 */
+    private Long commentCount;
+
     /** 计划发布时间。 */
     private Instant scheduledAt;
 

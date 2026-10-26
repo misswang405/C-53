@@ -4,12 +4,16 @@ import com.c53.common.ApiException;
 import com.c53.common.ratelimit.RateLimitResult;
 import com.c53.common.ratelimit.RedisRateLimiter;
 import com.c53.common.support.IdGenerator;
+import com.c53.config.DiscoveryProperties;
 import com.c53.config.PostProperties;
 import com.c53.modules.auth.service.AuthSessionGuard;
 import com.c53.modules.auth.service.UserSummaryService;
+import com.c53.modules.auth.service.UserSummaryService.UserScoringProfile;
 import com.c53.modules.auth.service.UserSummaryService.UserSummary;
 import com.c53.modules.media.dto.MediaDtos.MediaView;
 import com.c53.modules.media.service.MediaService;
+import com.c53.modules.interaction.service.InteractionQueryService;
+import com.c53.modules.interaction.service.InteractionQueryService.InteractionSummary;
 import com.c53.modules.post.dto.PostDtos.CreatePostRequest;
 import com.c53.modules.post.dto.PostDtos.PostListResponse;
 import com.c53.modules.post.dto.PostDtos.PostResponse;
@@ -21,9 +25,13 @@ import com.c53.modules.post.repository.PostStatus;
 import com.c53.modules.post.service.PostService;
 import com.c53.modules.post.support.ContentRules;
 import com.c53.modules.post.support.CursorCodec;
+import com.c53.modules.post.support.FeedScope;
+import com.c53.modules.post.support.RecommendationScorer;
+import com.c53.modules.social.service.FollowQueryService;
 import com.c53.modules.topic.dto.TopicDtos.TopicSummary;
 import com.c53.modules.topic.service.TopicService;
 import com.c53.security.AuthPrincipal;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -35,6 +43,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -43,6 +52,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 发布服务实现。
@@ -64,6 +74,11 @@ public class PostServiceImpl implements PostService {
     private final PostProperties properties;
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
+    private final FollowQueryService followQueryService;
+    private final DiscoveryProperties discoveryProperties;
+    private final RecommendationScorer recommendationScorer;
+    private final MeterRegistry meterRegistry;
+    private final InteractionQueryService interactionQueryService;
 
     public PostServiceImpl(PostRepository postRepository,
                            MediaService mediaService,
@@ -73,7 +88,12 @@ public class PostServiceImpl implements PostService {
                            RedisRateLimiter rateLimiter,
                            PostProperties properties,
                            TransactionTemplate transactionTemplate,
-                           Clock clock) {
+                           Clock clock,
+                           FollowQueryService followQueryService,
+                           DiscoveryProperties discoveryProperties,
+                           RecommendationScorer recommendationScorer,
+                           MeterRegistry meterRegistry,
+                           InteractionQueryService interactionQueryService) {
         this.postRepository = postRepository;
         this.mediaService = mediaService;
         this.topicService = topicService;
@@ -83,8 +103,18 @@ public class PostServiceImpl implements PostService {
         this.properties = properties;
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
+        this.followQueryService = followQueryService;
+        this.discoveryProperties = discoveryProperties;
+        this.recommendationScorer = recommendationScorer;
+        this.meterRegistry = meterRegistry;
+        this.interactionQueryService = interactionQueryService;
     }
 
+    /**
+     * 创建动态，同时支持草稿、立即发布和定时发布三种入口。
+     *
+     * <p>返回值里的 {@code created=false} 表示命中幂等，重复提交直接返回首次结果。</p>
+     */
     @Override
     public CreateResult create(AuthPrincipal principal, CreatePostRequest request) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -92,6 +122,7 @@ public class PostServiceImpl implements PostService {
         String status = PostStatus.parseCreateStatus(request.status());
         String content = ContentRules.normalize(request.content());
         boolean draft = PostStatus.DRAFT.equals(status);
+        // 草稿允许空内容，正式内容必须完整校验
         if (draft) {
             ContentRules.requireDraft(content);
         } else {
@@ -106,6 +137,7 @@ public class PostServiceImpl implements PostService {
             throw ApiException.badRequest("TOPIC_REQUIRED", "请选择话题");
         }
 
+        // 草稿阶段也校验媒体归属与状态，避免未完成的媒体被他人媒体替换
         List<String> mediaIds = normalizeMediaIds(request.mediaIds(), request.imageIds());
         String mediaType = mediaService.prepareBinding(userId, mediaIds, null);
 
@@ -118,6 +150,7 @@ public class PostServiceImpl implements PostService {
         }
 
         if (draft) {
+            // 草稿自动保存频率高，用分钟级限流；正式发布按小时限流
             enforce("post:autosave:" + userId + ":m", properties.getLimits().getAutosavePerMinute(),
                     Duration.ofMinutes(1), "保存过于频繁，请稍后再试");
             if (postRepository.countDrafts(userId) >= properties.getDraft().getMaxPerUser()) {
@@ -129,6 +162,7 @@ public class PostServiceImpl implements PostService {
                     Duration.ofHours(1), "发布过于频繁，请稍后再试");
         }
 
+        // 幂等：同一 clientRequestId 只产生一条动态，覆盖双击与断网重试
         String clientRequestId = normalizeRequestId(request.clientRequestId());
         if (clientRequestId != null) {
             Optional<PostEntity> existing = postRepository.findByAuthorAndRequestId(userId, clientRequestId);
@@ -155,6 +189,7 @@ public class PostServiceImpl implements PostService {
         entity.setUpdatedAt(now);
 
         try {
+            // 动态、媒体绑定、话题计数必须同进同退，避免出现半成品数据
             transactionTemplate.executeWithoutResult(transaction -> {
                 postRepository.insert(entity);
                 if (!mediaIds.isEmpty()) {
@@ -165,6 +200,7 @@ public class PostServiceImpl implements PostService {
                 }
             });
         } catch (DuplicateKeyException exception) {
+            // 并发重试时唯一键会冲突，此时仍返回首次写入的结果
             PostEntity existing = postRepository.findByAuthorAndRequestId(userId, clientRequestId)
                     .orElseThrow(() -> exception);
             return new CreateResult(toResponses(List.of(existing), principal).get(0), false);
@@ -186,6 +222,17 @@ public class PostServiceImpl implements PostService {
             }
         }
         return toResponses(List.of(post), principal).get(0);
+    }
+
+    /**
+     * 编辑内容。已发布和定时中的动态按正式内容校验，草稿沿用草稿规则。
+     */
+    @Override
+    public List<PostResponse> getPublishedViews(AuthPrincipal principal, Collection<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return toResponses(postRepository.findPublishedByIds(ids), principal);
     }
 
     @Override
@@ -212,6 +259,7 @@ public class PostServiceImpl implements PostService {
         }
 
         List<String> mediaIds = normalizeMediaIds(request.mediaIds(), request.imageIds());
+        // 传入当前动态 id，已属于本条动态的媒体可重复提交
         String mediaType = mediaService.prepareBinding(userId, mediaIds, id);
         int version = request.version();
         Instant now = clock.instant();
@@ -219,11 +267,13 @@ public class PostServiceImpl implements PostService {
         List<String> removed = new ArrayList<>();
 
         transactionTemplate.executeWithoutResult(transaction -> {
+            // 乐观锁：version 不匹配说明内容已被其他端改过
             int updated = postRepository.updateContent(id, userId, version, content, topicId, mediaType,
                     published ? now : null);
             if (updated == 0) {
                 throw versionConflict(id, principal, version);
             }
+            // 对比新旧媒体集合，只解绑被移除的部分
             Set<String> keep = new LinkedHashSet<>(mediaIds);
             for (MediaView view : mediaService.listByPost(id)) {
                 if (!keep.contains(view.mediaId())) {
@@ -235,6 +285,7 @@ public class PostServiceImpl implements PostService {
                 mediaService.bind(userId, id, mediaIds);
             }
             if (published && !Objects.equals(previousTopicId, topicId)) {
+                // 已发布内容换话题时同步维护两个话题的计数
                 topicService.adjustPostCount(previousTopicId, -1);
                 topicService.adjustPostCount(topicId, 1);
             }
@@ -243,6 +294,9 @@ public class PostServiceImpl implements PostService {
         return loadView(id, principal);
     }
 
+    /**
+     * 草稿立即发布。状态流转由条件更新保证，重复调用不会重复计数。
+     */
     @Override
     public PostResponse publish(AuthPrincipal principal, String id) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -264,6 +318,7 @@ public class PostServiceImpl implements PostService {
 
         Instant now = clock.instant();
         transactionTemplate.executeWithoutResult(transaction -> {
+            // updated=0 说明状态已被并发修改（例如另一端刚发布或删除）
             int updated = postRepository.publishDraft(id, userId, now);
             if (updated == 0) {
                 throw ApiException.conflict("INVALID_STATUS_TRANSITION", "动态状态已变化，请刷新后重试");
@@ -277,6 +332,9 @@ public class PostServiceImpl implements PostService {
         return loadView(id, principal);
     }
 
+    /**
+     * 设置或修改定时发布时间。定时中的动态改期按草稿保存的限流口径处理。
+     */
     @Override
     public PostResponse schedule(AuthPrincipal principal, String id, ScheduleRequest request) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -326,6 +384,9 @@ public class PostServiceImpl implements PostService {
         return loadView(id, principal);
     }
 
+    /**
+     * 软删除：内容与媒体都标记删除，由清理任务在保留期后真正移除。
+     */
     @Override
     public void delete(AuthPrincipal principal, String id) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -340,6 +401,7 @@ public class PostServiceImpl implements PostService {
         }
         Instant now = clock.instant();
         transactionTemplate.executeWithoutResult(transaction -> {
+            // 已被并发删除时直接返回，避免重复扣减话题计数
             int updated = postRepository.softDelete(id, principal.userId(), now);
             if (updated == 0) {
                 return;
@@ -351,6 +413,10 @@ public class PostServiceImpl implements PostService {
         });
     }
 
+    /**
+     * 游标分页：多查一条判断是否还有下一页，避免 count 查询。
+     * 已发布按发布时间排序，草稿和定时按更新时间排序。
+     */
     @Override
     public PostListResponse myPosts(AuthPrincipal principal, String status, String cursor, int limit) {
         guard.requireActive(principal.userId(), principal.sessionId());
@@ -367,11 +433,184 @@ public class PostServiceImpl implements PostService {
         String nextCursor = null;
         if (hasMore && !page.isEmpty()) {
             PostEntity last = page.get(page.size() - 1);
+            // 游标时间字段必须与查询排序字段一致，否则会跳条或重复
             Instant time = PostStatus.PUBLISHED.equals(normalizedStatus)
                     ? last.getPublishedAt() : last.getUpdatedAt();
             nextCursor = CursorCodec.encode(time, last.getId());
         }
         return new PostListResponse(items, nextCursor);
+    }
+
+    /**
+     * 首页信息流：按范围分流查询，推荐流不分页，其余沿用发布时间游标。
+     */
+    @Override
+    public PostListResponse feed(AuthPrincipal principal, String scope, String cursor,
+                                 int limit, String clientIp) {
+        FeedScope feedScope = FeedScope.parse(scope);
+        int size = normalizeFeedLimit(limit);
+        if (feedScope == FeedScope.FOLLOWING) {
+            requireLogin(principal);
+        }
+        validateCursor(cursor);
+        enforceFeedRateLimit(principal, clientIp);
+
+        long start = System.nanoTime();
+        PostListResponse response = switch (feedScope) {
+            case LATEST -> listLatest(principal, cursor, size);
+            case FOLLOWING -> listFollowing(principal, cursor, size);
+            case RECOMMENDED -> listRecommended(principal, size);
+        };
+        recordFeedMetrics(feedScope, response.items().size(), start);
+        return response;
+    }
+
+    @Override
+    public Map<String, Long> countPublishedSince(Collection<String> authorIds, Instant since) {
+        return postRepository.countPublishedByAuthorsSince(authorIds, since);
+    }
+
+    private PostListResponse listLatest(AuthPrincipal principal, String cursor, int size) {
+        CursorCodec.Cursor decoded = CursorCodec.decode(cursor);
+        List<PostEntity> rows = postRepository.findLatest(
+                decoded == null ? null : decoded.time(),
+                decoded == null ? null : decoded.id(),
+                size + 1);
+        return buildFeedPage(rows, size, principal);
+    }
+
+    private PostListResponse listFollowing(AuthPrincipal principal, String cursor, int size) {
+        Set<String> authorIds = followQueryService.findFollowingIds(principal.userId());
+        if (authorIds.isEmpty()) {
+            return new PostListResponse(List.of(), null);
+        }
+        CursorCodec.Cursor decoded = CursorCodec.decode(cursor);
+        List<PostEntity> rows = postRepository.findByAuthors(
+                authorIds, principal.userId(),
+                decoded == null ? null : decoded.time(),
+                decoded == null ? null : decoded.id(),
+                size + 1);
+        return buildFeedPage(rows, size, principal);
+    }
+
+    private PostListResponse listRecommended(AuthPrincipal principal, int size) {
+        Instant now = clock.instant();
+        Instant since = now.minus(discoveryProperties.getFeed().getRecommendedWindow());
+        List<PostEntity> candidates = postRepository.findRecommendedCandidates(
+                since, discoveryProperties.getFeed().getCandidateLimit());
+        if (principal != null) {
+            candidates = candidates.stream()
+                    .filter(post -> !principal.userId().equals(post.getAuthorId()))
+                    .toList();
+        }
+        candidates = filterInactiveAuthors(candidates);
+        candidates = filterHidden(candidates, principal);
+        if (candidates.isEmpty()) {
+            return new PostListResponse(List.of(), null);
+        }
+        List<PostEntity> ordered = recommendationScorer.rank(candidates, scoreContext(candidates), now,
+                discoveryProperties.getFeed().getMaxAuthorStreak());
+        List<PostEntity> page = ordered.size() > size ? ordered.subList(0, size) : ordered;
+        // 打分排序无法用时间游标续页，本期推荐流不提供下一页
+        return new PostListResponse(toResponses(page, principal), null);
+    }
+
+    private PostListResponse buildFeedPage(List<PostEntity> rows, int size, AuthPrincipal principal) {
+        boolean hasMore = rows.size() > size;
+        List<PostEntity> page = hasMore ? rows.subList(0, size) : rows;
+        List<PostResponse> items = toResponses(filterInactiveAuthors(page), principal);
+        String nextCursor = null;
+        if (hasMore && !page.isEmpty()) {
+            PostEntity last = page.get(page.size() - 1);
+            nextCursor = CursorCodec.encode(last.getPublishedAt(), last.getId());
+        }
+        return new PostListResponse(items, nextCursor);
+    }
+
+    /**
+     * 过滤已注销或封禁的作者，避免信息流出现不可点击的内容。
+     */
+    private List<PostEntity> filterInactiveAuthors(List<PostEntity> posts) {
+        if (posts.isEmpty()) {
+            return posts;
+        }
+        Set<String> authorIds = posts.stream()
+                .map(PostEntity::getAuthorId)
+                .collect(Collectors.toSet());
+        Set<String> active = userSummaryService.findActiveUserIds(authorIds);
+        if (active.size() == authorIds.size()) {
+            return posts;
+        }
+        return posts.stream().filter(post -> active.contains(post.getAuthorId())).toList();
+    }
+
+    /**
+     * 拉黑过滤预留点，3.8 模块上线后在此剔除被拉黑作者的内容。
+     */
+    private List<PostEntity> filterHidden(List<PostEntity> posts, AuthPrincipal principal) {
+        return posts;
+    }
+
+    private RecommendationScorer.ScoreContext scoreContext(List<PostEntity> candidates) {
+        Set<String> topicIds = candidates.stream()
+                .map(PostEntity::getTopicId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<String, TopicSummary> topics = topicService.findByIds(topicIds);
+        long maxTopicCount = topics.values().stream()
+                .mapToLong(TopicSummary::postCount)
+                .max()
+                .orElse(0);
+        Set<String> authorIds = candidates.stream()
+                .map(PostEntity::getAuthorId)
+                .collect(Collectors.toSet());
+        Map<String, UserScoringProfile> profiles = userSummaryService.findScoringProfiles(authorIds);
+        return new RecommendationScorer.ScoreContext(topics, maxTopicCount, profiles);
+    }
+
+    private int normalizeFeedLimit(int limit) {
+        int fallback = discoveryProperties.getFeed().getDefaultLimit();
+        if (limit <= 0) {
+            return fallback;
+        }
+        return Math.min(limit, discoveryProperties.getFeed().getMaxLimit());
+    }
+
+    private void validateCursor(String cursor) {
+        if (cursor != null && cursor.length() > 256) {
+            throw ApiException.badRequest("VALIDATION_ERROR", "分页游标不合法");
+        }
+    }
+
+    private void requireLogin(AuthPrincipal principal) {
+        if (principal == null || principal.userId() == null) {
+            throw ApiException.unauthorized("UNAUTHORIZED", "请先登录");
+        }
+    }
+
+    /**
+     * 匿名按 IP、登录按用户限流，两者额度不同。
+     */
+    private void enforceFeedRateLimit(AuthPrincipal principal, String clientIp) {
+        boolean anonymous = principal == null || principal.userId() == null;
+        String key;
+        int limit;
+        if (anonymous) {
+            String ip = clientIp == null || clientIp.isBlank() ? "unknown" : clientIp;
+            key = "discovery:rate:feed:ip:" + ip;
+            limit = discoveryProperties.getFeed().getAnonymousPerMinute();
+        } else {
+            key = "discovery:rate:feed:user:" + principal.userId();
+            limit = discoveryProperties.getFeed().getUserPerMinute();
+        }
+        enforce(key, limit, Duration.ofMinutes(1), "操作过于频繁，请稍后再试");
+    }
+
+    private void recordFeedMetrics(FeedScope scope, int itemCount, long startNanos) {
+        meterRegistry.counter("c53.feed.requests", "scope", scope.name()).increment();
+        meterRegistry.timer("c53.feed.duration", "scope", scope.name())
+                .record(Duration.ofNanos(System.nanoTime() - startNanos));
+        meterRegistry.summary("c53.feed.items", "scope", scope.name()).record(itemCount);
     }
 
     private PostEntity requireOwned(AuthPrincipal principal, String id) {
@@ -417,12 +656,17 @@ public class PostServiceImpl implements PostService {
             }
             postIds.add(post.getId());
         }
+        // 批量取作者、话题、媒体，避免逐条查询造成 N+1
         Map<String, UserSummary> users = userSummaryService.findByIds(authorIds);
         Map<String, TopicSummary> topics = topicService.findByIds(topicIds);
         Map<String, List<MediaView>> media = new HashMap<>(mediaService.listByPosts(postIds));
+        Map<String, InteractionSummary> interactions = interactionQueryService.findSummaries(
+                postIds, principal == null ? null : principal.userId());
 
         List<PostResponse> result = new ArrayList<>(posts.size());
         for (PostEntity post : posts) {
+            InteractionSummary interaction = interactions.getOrDefault(post.getId(),
+                    new InteractionSummary(0, false, false, 0));
             result.add(new PostResponse(
                     post.getId(),
                     users.get(post.getAuthorId()),
@@ -437,11 +681,18 @@ public class PostServiceImpl implements PostService {
                     post.getEditedAt(),
                     post.getCreatedAt(),
                     post.getVersion() == null ? 1 : post.getVersion(),
-                    principal != null && principal.userId().equals(post.getAuthorId())));
+                    principal != null && principal.userId().equals(post.getAuthorId()),
+                    interaction.likeCount(),
+                    interaction.likedByMe(),
+                    interaction.bookmarkedByMe(),
+                    interaction.commentCount()));
         }
         return result;
     }
 
+    /**
+     * 定时时间必须落在「最短提前量」和「最长提前量」之间，防止误设到过去或过远。
+     */
     private Instant validateScheduledAt(Instant scheduledAt, Instant now) {
         if (scheduledAt == null) {
             throw ApiException.badRequest("VALIDATION_ERROR", "请选择发布时间");
@@ -488,6 +739,10 @@ public class PostServiceImpl implements PostService {
         };
     }
 
+    /**
+     * 合并新旧两个媒体字段：{@code imageIds} 为早期只支持图片的兼容字段。
+     * 用 LinkedHashSet 去重并保留前端提交的顺序，顺序即展示顺序。
+     */
     private static List<String> normalizeMediaIds(List<String> mediaIds, List<String> imageIds) {
         LinkedHashSet<String> unique = new LinkedHashSet<>();
         if (mediaIds != null) {

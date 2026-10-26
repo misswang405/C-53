@@ -7,6 +7,11 @@ import com.c53.modules.post.dto.PostDtos.ScheduleRequest;
 import com.c53.modules.post.dto.PostDtos.UpdatePostRequest;
 import com.c53.security.AuthPrincipal;
 
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
 /**
  * 动态发布、编辑、定时与删除。
  */
@@ -38,6 +43,11 @@ public interface PostService {
      * @return 动态视图
      */
     PostResponse get(AuthPrincipal principal, String id);
+
+    /**
+     * 批量查询公开动态视图，供收藏等列表模块避免逐条查询。
+     */
+    List<PostResponse> getPublishedViews(AuthPrincipal principal, Collection<String> ids);
 
     /**
      * 编辑正文、话题与媒体。
@@ -95,4 +105,25 @@ public interface PostService {
      * @return 列表与下一页游标
      */
     PostListResponse myPosts(AuthPrincipal principal, String status, String cursor, int limit);
+
+    /**
+     * 首页信息流。
+     *
+     * @param principal 当前用户，游客为 null
+     * @param scope     范围：RECOMMENDED / FOLLOWING / LATEST
+     * @param cursor    分页游标
+     * @param limit     返回条数
+     * @param clientIp  客户端 IP，用于匿名限流
+     * @return 动态列表与下一页游标
+     */
+    PostListResponse feed(AuthPrincipal principal, String scope, String cursor, int limit, String clientIp);
+
+    /**
+     * 统计作者在指定时间之后发布的动态数，供推荐创作者打分使用。
+     *
+     * @param authorIds 作者 ID 集合
+     * @param since     起始时间
+     * @return 作者 ID 到发布数的映射
+     */
+    Map<String, Long> countPublishedSince(Collection<String> authorIds, Instant since);
 }

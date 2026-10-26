@@ -1,4 +1,5 @@
 -- C-53 发布模块数据库表结构 v1.0
+-- 表按动态、媒体、话题分组；状态字段和软删除字段共同表达生命周期。
 -- 位置：后端发布模块资源，启动时由 Spring SQL Init 执行
 -- 依据：docs/需求文档/发布功能PRD.md v1.1、docs/开发文档/发布功能开发方案.md v1.0
 -- 目标数据库：MySQL 5.7.8+ / MySQL 8.0，InnoDB，utf8mb4
@@ -29,6 +30,10 @@ CREATE TABLE IF NOT EXISTS posts (
                           COMMENT '话题 ID',
     media_type        VARCHAR(16)  CHARACTER SET ascii COLLATE ascii_bin NULL
                           COMMENT 'IMAGE / VIDEO；无媒体为 NULL',
+    like_count        BIGINT       NOT NULL DEFAULT 0
+                          COMMENT '点赞数',
+    comment_count     BIGINT       NOT NULL DEFAULT 0
+                          COMMENT '评论与回复总数',
     scheduled_at      DATETIME(3)  NULL
                           COMMENT '计划发布时间（UTC）',
     published_at      DATETIME(3)  NULL
@@ -147,3 +152,49 @@ INSERT IGNORE INTO topics (id, name, status, post_count) VALUES
     ('tpc_seed_reading', '读书',   'ACTIVE', 0),
     ('tpc_seed_city',    '城市',   'ACTIVE', 0),
     ('tpc_seed_idea',    '灵感',   'ACTIVE', 0);
+
+
+-- ---------------------------------------------------------------------------
+-- 5. 关注流索引（幂等）
+--    CREATE TABLE IF NOT EXISTS 不会为已存在的表补索引，
+--    这里先查 information_schema 再决定是否执行 ALTER。
+-- ---------------------------------------------------------------------------
+-- 已存在的 posts 表需要补齐互动计数列；新建表已在上方直接包含字段。
+SET @column_exists := (
+    SELECT COUNT(*) FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'posts'
+      AND column_name = 'like_count'
+);
+SET @ddl := IF(@column_exists = 0,
+    'ALTER TABLE posts ADD COLUMN like_count BIGINT NOT NULL DEFAULT 0 COMMENT ''点赞数''',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @column_exists := (
+    SELECT COUNT(*) FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'posts'
+      AND column_name = 'comment_count'
+);
+SET @ddl := IF(@column_exists = 0,
+    'ALTER TABLE posts ADD COLUMN comment_count BIGINT NOT NULL DEFAULT 0 COMMENT ''评论与回复总数''',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @index_exists := (
+    SELECT COUNT(*) FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = 'posts'
+      AND index_name = 'idx_posts_author_status_published'
+);
+SET @ddl := IF(@index_exists = 0,
+    'ALTER TABLE posts ADD INDEX idx_posts_author_status_published (author_id, status, published_at, id)',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

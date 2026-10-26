@@ -32,6 +32,7 @@ public class PostProperties {
     /** 基础敏感词表，为空表示不启用。 */
     private List<String> blockedWords = new ArrayList<>();
 
+    /** 定时发布时间范围与后台扫描配置。 */
     @Data
     public static class Schedule {
         /** 最小提前量。 */
@@ -46,6 +47,7 @@ public class PostProperties {
         private Duration lockTtl = Duration.ofSeconds(55);
     }
 
+    /** 发布和自动保存的频率限制。 */
     @Data
     public static class Limits {
         /** 发布次数：每小时。 */
@@ -54,6 +56,7 @@ public class PostProperties {
         private int autosavePerMinute = 60;
     }
 
+    /** 草稿数量和保留时长配置。 */
     @Data
     public static class Draft {
         /** 每用户最大草稿数。 */
@@ -62,6 +65,7 @@ public class PostProperties {
         private Duration retention = Duration.ofDays(90);
     }
 
+    /** 删除动态及过期草稿的清理策略。 */
     @Data
     public static class Cleanup {
         /** 删除记录与媒体保留期。 */
