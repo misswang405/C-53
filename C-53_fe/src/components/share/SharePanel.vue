@@ -1,10 +1,13 @@
 <script setup>
+// 分享弹层：展示分享目标并提供渠道选择和链接复制入口。
+// 接收弹窗开关、分享目标和链接主机展示文本，不直接执行分享接口。
 defineProps({
   open: { type: Boolean, default: false },
   target: { type: Object, default: null },
   host: { type: String, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['close', 'share-to', 'copy-link'])
 </script>
 

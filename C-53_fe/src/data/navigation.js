@@ -1,3 +1,4 @@
+// 主导航配置：集中维护页面标识、名称与图标，供导航组件复用。
 export const views = [
   { id: 'feed', label: '星球空间', icon: 'home' },
   { id: 'discover', label: '发现灵感', icon: 'compass' },

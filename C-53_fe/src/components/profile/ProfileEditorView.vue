@@ -1,4 +1,6 @@
 <script setup>
+// 资料编辑页面：编辑个人资料、头像及出生日期。
+// draft 是父组件提供的可编辑副本；日期派生值和选择器状态也由父组件管理。
 defineProps({
   draft: { type: Object, required: true },
   birthPickerOpen: { type: Boolean, default: false },
@@ -10,6 +12,7 @@ defineProps({
   zodiac: { type: String, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['close', 'save', 'avatar-upload', 'open-birth-picker', 'close-birth-picker', 'select-birth-part', 'clear-birth-date'])
 </script>
 

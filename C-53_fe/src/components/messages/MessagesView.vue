@@ -1,4 +1,6 @@
 <script setup>
+// 私信页面：展示会话列表与当前聊天内容。
+// 会话、消息及输入草稿来自父组件，发送结果由父组件同步。
 defineProps({
   conversations: { type: Array, required: true },
   activeConversation: { type: Number, required: true },
@@ -7,6 +9,7 @@ defineProps({
   chatDraft: { type: String, default: '' },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['select-conversation', 'update:chatDraft', 'send'])
 </script>
 

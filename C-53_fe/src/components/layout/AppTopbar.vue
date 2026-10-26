@@ -1,4 +1,6 @@
 <script setup>
+// 顶部导航：提供搜索、通知、发布和账号菜单入口。
+// 搜索词、菜单开关及登录用户信息由父组件维护。
 defineProps({
   searchQuery: { type: String, default: '' },
   isAuthenticated: { type: Boolean, required: true },
@@ -9,6 +11,7 @@ defineProps({
   notifications: { type: Array, default: () => [] },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits([
   'update:searchQuery',
   'open-mobile-nav',

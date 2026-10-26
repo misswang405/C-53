@@ -1,6 +1,8 @@
 <script setup>
+// 个人主页：展示当前用户资料、统计和已发布内容。
 import ProfilePostList from './ProfilePostList.vue'
 
+// 用户资料、头像占位字符和动态列表由父组件提供。
 defineProps({
   profileInfo: { type: Object, required: true },
   profileInitial: { type: String, required: true },
@@ -8,6 +10,7 @@ defineProps({
   responseCount: { type: Function, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['share-profile', 'edit', 'scroll-content', 'open-connections', 'open-post', 'toggle-like', 'go-comments', 'share'])
 </script>
 

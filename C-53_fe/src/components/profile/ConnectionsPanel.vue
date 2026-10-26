@@ -1,4 +1,6 @@
 <script setup>
+// 关注关系弹层：展示并搜索关注者或正在关注的成员。
+// 关系类型、筛选后的成员及关系文案函数由父组件提供。
 defineProps({
   open: { type: Boolean, default: false },
   type: { type: String, required: true },
@@ -7,6 +9,7 @@ defineProps({
   connectionLabel: { type: Function, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['close', 'update:search', 'open-profile', 'toggle-connection'])
 </script>
 

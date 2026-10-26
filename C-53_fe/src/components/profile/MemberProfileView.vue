@@ -1,6 +1,8 @@
 <script setup>
+// 成员主页：展示其他成员的资料、关注关系和公开动态。
 import ProfilePostList from './ProfilePostList.vue'
 
+// 成员资料和动态由父组件加载，关注按钮文案复用统一关系规则。
 defineProps({
   member: { type: Object, required: true },
   posts: { type: Array, required: true },
@@ -8,6 +10,7 @@ defineProps({
   connectionLabel: { type: Function, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['back', 'toggle-connection', 'open-post', 'toggle-like', 'go-comments', 'share'])
 </script>
 

@@ -1,4 +1,6 @@
 <script setup>
+// 设置页面：展示账号、安全、隐私和偏好设置入口。
+// 各设置分组共享父组件维护的对象，持久化与账号操作由父组件处理。
 defineProps({
   settingsNav: { type: Array, required: true },
   activeSection: { type: String, required: true },
@@ -19,6 +21,7 @@ defineProps({
   specialModes: { type: Object, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits([
   'back',
   'navigate-section',

@@ -1,10 +1,13 @@
 <script setup>
+// 主页动态列表：复用个人主页与成员主页的内容展示。
+// 根据 ownProfile 切换日期展示，动态互动由父组件处理。
 defineProps({
   posts: { type: Array, required: true },
   ownProfile: { type: Boolean, default: false },
   responseCount: { type: Function, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['open-post', 'toggle-like', 'go-comments', 'share'])
 </script>
 

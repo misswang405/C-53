@@ -1,3 +1,4 @@
+// 社区页面演示数据：成员、动态和私信样例，不作为真实接口数据源。
 export const peopleFixtures = [
   { id: 1, name: '沈闻', handle: '@shenwen', initials: '沈', field: '独立摄影师', followed: false, tone: 'violet' },
   { id: 2, name: '阿屿', handle: '@a-yu', initials: '屿', field: '交互设计师', followed: false, tone: 'coral' },

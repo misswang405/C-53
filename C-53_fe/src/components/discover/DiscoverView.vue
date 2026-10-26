@@ -1,9 +1,12 @@
 <script setup>
+// 发现页面：展示热门话题与推荐创作者。
+// 接收已整理的话题和创作者列表，不在组件内发起接口请求。
 defineProps({
   topics: { type: Array, required: true },
   people: { type: Array, required: true },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['open-profile', 'follow'])
 </script>
 

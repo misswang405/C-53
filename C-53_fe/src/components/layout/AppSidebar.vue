@@ -1,4 +1,6 @@
 <script setup>
+// 侧边导航：展示页面入口、话题和社区在线人数。
+// 导航项、当前页面及移动端展开状态均由父组件传入。
 defineProps({
   views: { type: Array, required: true },
   topics: { type: Array, required: true },
@@ -7,6 +9,7 @@ defineProps({
   onlineCount: { type: Number, default: 0 },
 })
 
+// 将用户操作与双向绑定变更通知父组件，由父组件统一处理业务状态。
 defineEmits(['navigate', 'close'])
 </script>
 

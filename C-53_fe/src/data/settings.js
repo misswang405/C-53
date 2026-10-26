@@ -1,3 +1,4 @@
+// 设置页面的静态选项与分组定义；实际设置值由业务状态维护。
 export const settingsNav = [
   { id: 'account', label: '账户与登录', icon: '人' },
   { id: 'permissions', label: '系统权限', icon: '⌁' },
